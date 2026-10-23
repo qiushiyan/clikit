@@ -12,9 +12,11 @@ change must keep are in `CLAUDE.md`.
 `App.Run` builds a fresh grammar from `New`, then the Kong parser with the
 tool's options first and clikit's own last: name, description, stdin bound as
 an `io.Reader`, the environment-enum check, and `own` (writers, exit hook,
-help printer), applied both as an option and again after every `PostBuild`.
+help printer), applied both as an option and again after every `PostBuild`,
+and `settlePlaceholders`, which writes each flag's value name into the model.
 `checkDeclaration` then rejects any grammar help would describe wrongly, before
-a single argument is read.
+a single argument is read. A leading `help` becomes a trailing `--help` unless
+the tool declares a `help` command itself.
 
 Kong's `Parse` runs in a fixed order, and clikit's guarantees hang on where
 each step sits in it:
@@ -36,9 +38,11 @@ each step sits in it:
 `parseFailure` and `commandOutcome` turn the result into a status:
 
 - **Help or `--version`:** 0, on stdout.
-- **Exit 80 from Kong, or `Usage(err)`:** `App.UsageCode`, with the error, the
-  command's synopsis and a pointer to its `--help`, on stderr.
+- **Exit 80 from Kong, or `Usage(err)`:** `App.UsageCode`, with the error
+  (restated by `usageMessage` where Kong's wording misleads), the command's
+  synopsis and a pointer to its `--help`, on stderr.
 - **`Exit(n)`:** n, with nothing printed; the command reported it.
+- **`Fail(n, err)`:** n, with one `<tool>: error:` line.
 - **Anything else** (a hook, an environment value, a help write, a command
   error): `App.FailureCode`, with one `<tool>: error:` line.
 
@@ -59,6 +63,22 @@ each step sits in it:
   xor pair as if both flags were required, a synopsis the parser rejects, and
   reflows authored prose through `go/doc`. Owning the renderer is also what lets help
   carry generated exit codes, constraints and declared sections.
+- **Kong's messages pass through, except where they mislead.** Kong offers
+  the help flag for any mistyped short flag, says `got "EOL"` for a missing
+  value, and brackets optional positionals; free text starting with a dash
+  reads as a flag. `usageMessage` restates those few shapes and adds the `--`
+  hint, and `settlePlaceholders` makes Kong's lines name a flag as the usage
+  line does. Rewriting every message would mean owning Kong's wording;
+  restating only these, each pinned by a test, means a Kong release that
+  rewords one fails loudly.
+- **Generated rows wrap at a fixed 100 columns.** A help tag written as a full
+  sentence, with its notes, runs past 150 columns, and unwrapped rows push
+  authors to cut tags short. The width is fixed rather than the terminal's so a
+  page, and its golden file, is the same everywhere; `Help()` text and
+  sections stay exactly as written.
+- **A command's own sections come before the Shared ones it inherits.** A
+  reader opening one command's page wants that command first; the tool-wide
+  text follows.
 - **Reject what cannot be rendered truthfully.** An xor group with only some
   members required (Kong then requires none), a branching positional argument,
   an enum default outside its values and `kong.NoDefaultHelp` fail at
@@ -80,8 +100,10 @@ each step sits in it:
 
 ## Deliberately not built
 
-- **Line wrapping.** Agents read help, and authored text is laid out on
-  purpose; a terminal wraps what is too long.
+- **Wrapping authored text.** `Help()` and sections are laid out on purpose.
+- **Shared sections for a subset of commands.** `Shared` reaches every page
+  below; a section that serves only some commands is returned by those
+  commands' own `HelpSections`, from one shared value.
 - **Kong `group:` titles.** Presentation only; flags render as one list.
 - **A Markdown or JSON export of the command tree.** Skills point agents at
   `--help`, the one consumer that exists. When a skill or README needs an

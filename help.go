@@ -5,6 +5,7 @@ import (
 	"io"
 	"maps"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -34,6 +35,11 @@ type HelpSections interface {
 // maxLabel is the widest label that keeps its help on the same line; a wider
 // one puts its help on the next line instead of pushing every row right.
 const maxLabel = 32
+
+// lineWidth is where generated rows wrap: fixed, not the terminal's, so a
+// page is the same everywhere and golden files stay stable. Authored text
+// (Help(), sections) is never wrapped.
+const lineWidth = 100
 
 func printHelp(a App) kong.HelpPrinter {
 	return func(_ kong.HelpOptions, ctx *kong.Context) error {
@@ -80,10 +86,27 @@ func page(a App, app *kong.Application, n *kong.Node) string {
 			inherited = append(inherited, row{flagLabel(f), flagHelp(f, scope)})
 		}
 	}
-	width := labelWidth(args, own, inherited)
+	// A default command's arguments and flags parse at this level too, so
+	// this page lists them.
+	var deflt []row
+	if d := n.DefaultCmd; d != nil && d.Tag.Default == "withargs" {
+		dscope := scopeFlags(d)
+		for _, p := range d.Positional {
+			if !p.Tag.Hidden {
+				deflt = append(deflt, row{positionalLabel(p), positionalHelp(p, d.Passthrough)})
+			}
+		}
+		for _, f := range visibleFlags(d) {
+			deflt = append(deflt, row{flagLabel(f), flagHelp(f, dscope)})
+		}
+	}
+	width := labelWidth(args, own, inherited, deflt)
 	writeRows(&b, "Arguments", args, width)
 	writeRows(&b, "Flags", own, width)
 	writeRows(&b, "Inherited flags", inherited, width)
+	if len(deflt) > 0 {
+		writeRows(&b, fmt.Sprintf("Arguments and flags of %s, the default command", n.DefaultCmd.Name), deflt, width)
+	}
 	writeLines(&b, "Constraints", constraints(scope))
 
 	var cmds []row
@@ -333,31 +356,38 @@ func flagLabel(f *kong.Flag) string {
 
 var durationType = reflect.TypeFor[time.Duration]()
 
-// placeholder names a flag's value: the declared placeholder, else its type
-// when the name alone would hide it (INT, NUMBER, DURATION), else the name.
-// Unlike Kong's, it never shows the default there; the help column does.
-func placeholder(f *kong.Flag) string {
-	if p, ok := f.Mapper.(kong.PlaceHolderProvider); ok {
-		return p.PlaceHolder(f)
-	}
-	if f.IsMap() {
-		return "KEY=VALUE"
-	}
-	ph := f.PlaceHolder
-	if ph == "" {
-		t := f.Target.Type()
-		if f.IsSlice() {
-			t = t.Elem()
+// settlePlaceholders writes every value flag's placeholder into the model:
+// the declared one, else its type where the name alone would hide it (INT,
+// NUMBER, DURATION), else the name. Kong's own messages then name a flag
+// exactly as help does ("missing flags: --pickup=PICKUP"), and neither puts
+// the default there; the help column states it.
+func settlePlaceholders(k *kong.Kong) error {
+	var walk func(n *kong.Node)
+	walk = func(n *kong.Node) {
+		for _, f := range n.Flags {
+			if _, ok := f.Mapper.(kong.PlaceHolderProvider); ok || f.PlaceHolder != "" || f.IsMap() || f.IsBool() || f.IsCounter() {
+				continue
+			}
+			t := f.Target.Type()
+			if f.IsSlice() {
+				t = t.Elem()
+			}
+			if f.PlaceHolder = typeWord(t); f.PlaceHolder == "" {
+				f.PlaceHolder = strings.ToUpper(f.Name)
+			}
 		}
-		ph = typeWord(t)
+		for _, c := range n.Children {
+			walk(c)
+		}
 	}
-	if ph == "" {
-		ph = strings.ToUpper(f.Name)
-	}
-	if f.IsSlice() && f.Tag.Sep != -1 && f.Tag.Type == "" {
-		ph += string(f.Tag.Sep) + "..."
-	}
-	return ph
+	walk(k.Model.Node)
+	return nil
+}
+
+// placeholder is the flag's value name as Kong formats it, from the
+// placeholder settlePlaceholders wrote.
+func placeholder(f *kong.Flag) string {
+	return f.FormatPlaceHolder()
 }
 
 func typeWord(t reflect.Type) string {
@@ -504,22 +534,19 @@ func commandHelp(c *kong.Node) string {
 	return annotate(strings.TrimSpace(c.Help), notes)
 }
 
-// sections collects the Shared sections of n's ancestors, outermost first,
-// then all of n's own.
+// sections collects n's own sections, then the Shared sections of its
+// ancestors, nearest first: what is specific to the command reads before what
+// holds for the whole tool.
 func sections(n *kong.Node) []Section {
-	var out []Section
-	var chain []*kong.Node
+	out := declaredSections(n)
 	for p := n.Parent; p != nil; p = p.Parent {
-		chain = append(chain, p)
-	}
-	for _, p := range slices.Backward(chain) {
 		for _, s := range declaredSections(p) {
 			if s.Shared {
 				out = append(out, s)
 			}
 		}
 	}
-	return append(out, declaredSections(n)...)
+	return out
 }
 
 func declaredSections(n *kong.Node) []Section {
@@ -545,6 +572,9 @@ func exitCodes(a App) []row {
 		0:             "success",
 		a.UsageCode:   "invalid arguments; nothing was run",
 		a.FailureCode: "failed",
+	}
+	if a.UsageCode == a.FailureCode {
+		codes[a.FailureCode] = "failed, or invalid arguments (then nothing was run)"
 	}
 	maps.Copy(codes, a.ExitCodes)
 	var rows []row
@@ -578,7 +608,7 @@ func writeRows(b *strings.Builder, title string, rows []row, width int) {
 	pad := strings.Repeat(" ", 2+width+4)
 	for _, r := range rows {
 		w := utf8.RuneCountInString(r.label)
-		lines := strings.Split(r.help, "\n")
+		lines := wrap(r.help, max(lineWidth-len(pad), 40))
 		switch {
 		case r.help == "":
 			fmt.Fprintf(b, "  %s\n", r.label)
@@ -620,4 +650,53 @@ func indent(s, prefix string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// wrap breaks text at spaces so no line passes width runes, keeping its own
+// line breaks; a word longer than width stays whole.
+func wrap(text string, width int) []string {
+	var out []string
+	for line := range strings.SplitSeq(text, "\n") {
+		line = strings.TrimSpace(line)
+		cur := ""
+		for word := range strings.FieldsSeq(line) {
+			switch {
+			case cur == "":
+				cur = word
+			case utf8.RuneCountInString(cur)+1+utf8.RuneCountInString(word) > width:
+				out = append(out, cur)
+				cur = word
+			default:
+				cur += " " + word
+			}
+		}
+		out = append(out, cur)
+	}
+	return out
+}
+
+var (
+	// Kong's message for a flag given no value at the end of argv.
+	missingValue = regexp.MustCompile(`expected \S+ value but got "EOL" \(<EOL>\)`)
+	// Kong brackets an optional positional's name in a decoding error.
+	bracketed = regexp.MustCompile(`^\[(<[^>]+>(?: \.\.\.)?)\]: `)
+	// Kong offers the help flag for any short flag it does not know.
+	helpGuess = regexp.MustCompile(`, did you mean "(?:-h|--help)"\?$`)
+)
+
+// usageMessage restates the Kong messages that mislead a caller, and adds a
+// hint where the command takes free text: a word starting with "-" reads as a
+// flag unless it comes after --. Each rewrite is pinned by a test, so a Kong
+// release that changes the wording fails it rather than passing through.
+func usageMessage(msg string, n *kong.Node) (string, string) {
+	msg = missingValue.ReplaceAllString(msg, "missing value")
+	msg = bracketed.ReplaceAllString(msg, "$1: ")
+	msg = helpGuess.ReplaceAllString(msg, "")
+	hint := ""
+	if strings.HasPrefix(msg, "unknown flag ") && slices.ContainsFunc(n.Positional, func(p *kong.Positional) bool {
+		return !p.Tag.Hidden && p.IsCumulative() && p.PassthroughMode == kong.PassThroughModeNone
+	}) {
+		hint = `Text that starts with "-" goes after --, which ends the flags.`
+	}
+	return msg, hint
 }

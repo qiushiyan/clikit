@@ -26,8 +26,8 @@ go test -run TestGrammarHelp .
 
 - **Kong stays visible.** Tools import `kong` for their declarations and pass
   ordinary `kong.Option`s; clikit never re-exports or wraps Kong's grammar. The
-  public surface is `App`, `Exit`, `Usage`, `Section`, `HelpSections` and
-  `clikittest`'s `Run`, `HelpPages`, `Golden`. Growing it changes what every
+  public surface is `App`, `Exit`, `Fail`, `Usage`, `Section`, `HelpSections`
+  and `clikittest`'s `Run`, `HelpPages`, `Golden`. Growing it changes what every
   consumer depends on, so a new export earns its place against that.
 - **Help ends the run before anything else happens.** Kong's help hook calls
   `Exit(0)` and then returns, so the exit hook panics with `exitSignal` and
@@ -45,7 +45,12 @@ go test -run TestGrammarHelp .
   (Kong's mark for trace and validation errors) is invalid argv and gets the
   usage code with a synopsis; every other parse error, a bad enum from an
   environment variable (`checkEnvEnums`) and a failure to write help get the
-  failure code. Commands choose with `Exit` and `Usage`.
+  failure code. Commands choose with `Exit`, `Fail` and `Usage`.
+- **Kong's wording is restated only where it misleads**, in `usageMessage`
+  (`help.go`), each rewrite pinned by `TestUsageMessages`: a Kong release that
+  rewords a message fails that test instead of passing it through. Flags are
+  named by the placeholder `settlePlaceholders` writes into the model, so
+  Kong's own lines and the help page agree.
 - **Writers pass through unwrapped.** `ctx.Stdout` is the `App.Stdout` itself,
   so an `*os.File` stays one for terminal detection and nothing shared can
   race; help write errors come back as `helpWriteError` instead. Concurrent

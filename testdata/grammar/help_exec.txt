@@ -3,7 +3,8 @@ Usage: brief exec <args> ... [flags]
 Run a program with the tool's environment.
 
 Arguments:
-  <args> ...       Program and its arguments (from its first value on, everything is passed on unparsed, flags and -- included).
+  <args> ...       Program and its arguments (from its first value on, everything is passed on
+                   unparsed, flags and -- included).
 
 Flags:
   -v, --verbose    Say what runs.

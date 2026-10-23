@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/alecthomas/kong"
 	"github.com/qiushiyan/clikit"
@@ -565,5 +566,173 @@ func TestGrammarHelp(t *testing.T) {
 	}
 	if r := clikittest.Run(app, "login", "--user", "me"); r.Code != 2 || !strings.Contains(r.Stderr, "Usage: brief login --user=USER --password=PASSWORD\n") {
 		t.Fatalf("a required and-group needs every member, and says so: %+v", r)
+	}
+}
+
+type noteCLI struct {
+	Note   noteCmd   `cmd:"" help:"Append a note."`
+	Pickup pickupCmd `cmd:"" help:"Pick up a brief."`
+	Wait   waitNCmd  `cmd:"" help:"Wait for some jobs."`
+	Ask    askCmd    `cmd:"" help:"Resolve a fragment to one brief."`
+}
+
+type noteCmd struct {
+	Text []string `arg:"" help:"Words of the note."`
+}
+
+type pickupCmd struct {
+	Mode string `required:"" enum:"build,design" help:"How the first turn runs."`
+}
+
+type waitNCmd struct {
+	Count int `arg:"" optional:"" help:"How many jobs to wait for."`
+}
+
+type askCmd struct {
+	Fragment string `arg:"" help:"Part of a brief's name."`
+}
+
+type seam interface{ Now() string }
+
+type realClock struct{}
+
+func (realClock) Now() string { return "real" }
+
+type fakeClock struct{}
+
+func (fakeClock) Now() string { return "fake" }
+
+func (c *noteCmd) Run(ctx *kong.Context, clock seam) error {
+	fmt.Fprintln(ctx.Stdout, clock.Now(), strings.Join(c.Text, " "))
+	return nil
+}
+func (*pickupCmd) Run() error { return nil }
+func (*waitNCmd) Run() error  { return nil }
+
+func (c *askCmd) Run(ctx *kong.Context) error {
+	return clikit.Fail(5, fmt.Errorf("%s names two briefs", c.Fragment))
+}
+
+func noteApp() clikit.App {
+	return clikit.App{
+		Name: "jot", Description: "jot keeps notes.",
+		New:       func() any { return &noteCLI{} },
+		Options:   []kong.Option{kong.BindTo(realClock{}, (*seam)(nil))},
+		ExitCodes: map[int]string{5: "the fragment names more than one brief"},
+	}
+}
+
+// Kong's messages are restated where they mislead, and the flag in an error
+// is named exactly as the usage line names it.
+func TestUsageMessages(t *testing.T) {
+	cases := []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"pickup"}, []string{"jot: error: missing flags: --mode=MODE", "Usage: jot pickup --mode=MODE"}},
+		{[]string{"pickup", "--mode"}, []string{"jot: error: --mode: missing value"}},
+		{[]string{"wait", "many"}, []string{`jot: error: <count>: expected a valid 64 bit int but got "many"`}},
+		{[]string{"note", "use", "-n", "now"}, []string{"jot: error: unknown flag -n", `Text that starts with "-" goes after --, which ends the flags.`, "Usage: jot note <text> ..."}},
+	}
+	for _, c := range cases {
+		r := clikittest.Run(noteApp(), c.args...)
+		if r.Code != 2 {
+			t.Errorf("%v: exit %d", c.args, r.Code)
+		}
+		for _, w := range c.want {
+			if !strings.Contains(r.Stderr, w+"\n") {
+				t.Errorf("%v: missing line %q in:\n%s", c.args, w, r.Stderr)
+			}
+		}
+		if strings.Contains(r.Stderr, `did you mean "-h"`) {
+			t.Errorf("%v: offers help for a mistyped flag:\n%s", c.args, r.Stderr)
+		}
+	}
+	if r := clikittest.Run(noteApp(), "note", "--", "-n", "now"); r.Code != 0 || r.Stdout != "real -n now\n" {
+		t.Errorf("text after --: %+v", r)
+	}
+}
+
+func TestFail(t *testing.T) {
+	r := clikittest.Run(noteApp(), "ask", "drift")
+	if r.Code != 5 || r.Stderr != "jot: error: drift names two briefs\n" || r.Stdout != "" {
+		t.Fatalf("%+v", r)
+	}
+	if clikit.Fail(5, nil) != nil {
+		t.Error("Fail(code, nil) must be nil")
+	}
+	if err := errors.New("x"); clikit.Fail(0, err) != err {
+		t.Error("Fail(0, err) must be err")
+	}
+	if help := clikittest.Run(noteApp(), "--help").Stdout; !strings.Contains(help, "  5    the fragment names more than one brief\n") {
+		t.Errorf("exit codes:\n%s", help)
+	}
+}
+
+func TestHelpCommand(t *testing.T) {
+	app, _ := newApp()
+	for _, path := range [][]string{nil, {"repo"}, {"repo", "add"}} {
+		want := clikittest.Run(app, append(slices.Clone(path), "--help")...)
+		got := clikittest.Run(app, append([]string{"help"}, path...)...)
+		if got != want || got.Code != 0 {
+			t.Errorf("help %v differs from %v --help:\n%s\n---\n%s", path, path, got.Stdout, want.Stdout)
+		}
+	}
+	if r := clikittest.Run(app, "help", "nope"); r.Code != 2 || !strings.Contains(r.Stderr, "unexpected argument nope") {
+		t.Errorf("help nope: %+v", r)
+	}
+}
+
+type ownHelp struct {
+	Help helpCmd `cmd:"" help:"Explain a topic."`
+}
+
+type helpCmd struct {
+	Topic string `arg:"" optional:"" help:"Topic to explain."`
+}
+
+func (c *helpCmd) Run(ctx *kong.Context) error {
+	fmt.Fprintln(ctx.Stdout, "topic", c.Topic)
+	return nil
+}
+
+func TestOwnHelpCommandWins(t *testing.T) {
+	app := clikit.App{Name: "t", Description: "t explains.", New: func() any { return &ownHelp{} }}
+	if r := clikittest.Run(app, "help", "flags"); r.Code != 0 || r.Stdout != "topic flags\n" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestEqualUsageAndFailureCodes(t *testing.T) {
+	app := noteApp()
+	app.UsageCode, app.FailureCode = 1, 1
+	help := clikittest.Run(app, "--help").Stdout
+	if !strings.Contains(help, "  1    failed, or invalid arguments (then nothing was run)\n") {
+		t.Fatalf("exit codes:\n%s", help)
+	}
+}
+
+// A test replaces a binding by appending an option of the same type to a copy
+// of App.Options: Kong keeps one binding per type, and the later one wins.
+func TestLaterBindingReplacesEarlier(t *testing.T) {
+	app := noteApp()
+	app.Options = append(slices.Clone(app.Options), kong.BindTo(fakeClock{}, (*seam)(nil)))
+	if r := clikittest.Run(app, "note", "hi"); r.Stdout != "fake hi\n" {
+		t.Fatalf("%+v", r)
+	}
+	if r := clikittest.Run(noteApp(), "note", "hi"); r.Stdout != "real hi\n" {
+		t.Fatalf("the original App changed: %+v", r)
+	}
+}
+
+// Generated rows wrap at a fixed width; authored text is left as written.
+func TestRowsWrap(t *testing.T) {
+	app, _ := newApp()
+	for path, page := range clikittest.HelpPages(t, app) {
+		for line := range strings.SplitSeq(page, "\n") {
+			if utf8.RuneCountInString(line) > 100 {
+				t.Errorf("%q: line over 100 columns: %q", path, line)
+			}
+		}
 	}
 }

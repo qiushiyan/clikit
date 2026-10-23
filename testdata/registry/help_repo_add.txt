@@ -7,18 +7,19 @@ Arguments:
 
 Flags:
       --name=NAME    Name to register it under.
-      --role=ROLE    What the repository is for (default: tool; one of: tool, lib, notes; env: $CLIKIT_TEST_ROLE).
+      --role=ROLE    What the repository is for (default: tool; one of: tool, lib, notes; env:
+                     $CLIKIT_TEST_ROLE).
 
 Inherited flags:
   -h, --help         Show context-sensitive help.
       --json         Print one JSON object instead of text.
       --home=HOME    Root of the registry (default: ~/.local/state/tool; env: $CLIKIT_TEST_HOME).
 
-Output:
-  --json prints one object; text otherwise.
-
 Examples:
   tool repo add ~/dev/gwt --role tool
+
+Output:
+  --json prints one object; text otherwise.
 
 Exit codes:
   0    success

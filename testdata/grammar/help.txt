@@ -6,6 +6,10 @@ brief indexes handoff briefs.
 Flags:
   -h, --help    Show context-sensitive help.
 
+Arguments and flags of show, the default command:
+  <fragment>    Part of a brief's name; the index when omitted (optional).
+      --full    Print the whole brief.
+
 Commands:
   show [<fragment>]    Show the brief a fragment names (default).
   exec <args> ...      Run a program with the tool's environment.

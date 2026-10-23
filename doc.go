@@ -38,17 +38,20 @@
 //
 // Run guarantees:
 //
-//   - Help always works. --help prints the page to stdout and exits 0 before
+//   - Help always works. --help (or "help [command…]", unless the tool declares
+//     a help command of its own) prints the page to stdout and exits 0 before
 //     any command runs, any hook after BeforeReset fires, or any environment
 //     variable is read. Load configuration and credentials in Run methods or
-//     through kong.BindToProvider, which is called only when a Run method asks
-//     for the value, never in grammar hooks or mappers. No option can take
-//     this away.
+//     through kong.BindToProvider (or kong.BindSingletonProvider, for a value
+//     several providers share), called only when a Run method asks for the
+//     value, never in grammar hooks or mappers. No option can take this away.
 //   - Help is rendered from the model. The synopsis, arguments, flags, typed
 //     placeholders, defaults, enums, environment variables, flag-group
-//     constraints, passthrough and exit codes come from the same declaration
-//     that parses argv. Help() text and sections are printed verbatim, never
-//     reflowed.
+//     constraints, passthrough, a default command's arguments and flags, and
+//     exit codes come from the same declaration that parses argv, and Kong's
+//     error lines name a flag as help does. Generated rows wrap at 100
+//     columns; Help() text and sections print verbatim, a command's own
+//     sections before the Shared ones it inherits.
 //   - A declaration whose help would be missing or untrue fails before parsing:
 //     anything visible without help, an empty Description, an enum default
 //     outside its values, an xor group with only some members required, a
@@ -57,12 +60,17 @@
 //   - Outcomes are classified by origin. Invalid argv exits with App.UsageCode
 //     after an error line, the synopsis and a pointer to --help, all on stderr.
 //     A bad value from an environment variable, and anything else that fails,
-//     exits with App.FailureCode. A command chooses its own status with Exit,
-//     declared in App.ExitCodes, or reports a usage error it found itself with
-//     Usage.
+//     exits with App.FailureCode. A command chooses its own status with Exit
+//     (it already reported) or Fail (Run prints the error), each code declared
+//     in App.ExitCodes, or reports a usage error it found itself with Usage.
+//     UsageCode defaults to 2, which a migrating tool often already uses for
+//     something else: set it to the tool's existing code.
 //
 // Commands write through the bound *kong.Context (ctx.Stdout, ctx.Stderr),
 // which are App.Stdout and App.Stderr themselves, and read input from a bound
-// io.Reader parameter (App.Stdin). The clikittest package runs an App with
-// captured output and pins every help page.
+// io.Reader parameter (App.Stdin); a provider may take the *kong.Context too.
+// The clikittest package runs an App with captured output and pins every help
+// page. A test swaps a dependency (a clock, tmux, a terminal check) by
+// appending an option that binds the same type to a copy of App.Options: Kong
+// keeps one binding per type, and the later one wins.
 package clikit

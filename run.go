@@ -102,6 +102,7 @@ func (a App) Run(args []string) (code int) {
 		kong.WithBeforeApply(checkEnvEnums),
 		kong.OptionFunc(own),
 		kong.PostBuild(own),
+		kong.PostBuild(settlePlaceholders),
 	)
 	k, err := kong.New(a.New(), opts...)
 	if err == nil {
@@ -125,6 +126,12 @@ func (a App) Run(args []string) (code int) {
 		}
 	}()
 
+	// `tool help [command…]` is `tool [command…] --help`, unless the tool
+	// declares a help command of its own.
+	if len(args) > 0 && args[0] == "help" && !hasChild(k.Model.Node, "help") {
+		args = append(slices.Clone(args[1:]), "--help")
+	}
+
 	ctx, err := k.Parse(args)
 	if err != nil {
 		return a.parseFailure(k.Model, err)
@@ -133,7 +140,7 @@ func (a App) Run(args []string) (code int) {
 }
 
 func (a App) parseFailure(app *kong.Application, err error) int {
-	if code, ok := chosenExit(err); ok {
+	if code, ok := a.chosen(err); ok {
 		return code
 	}
 	if hw, ok := errors.AsType[*helpWriteError](err); ok {
@@ -160,7 +167,7 @@ func (a App) commandOutcome(ctx *kong.Context, err error) int {
 	if err == nil {
 		return 0
 	}
-	if code, ok := chosenExit(err); ok {
+	if code, ok := a.chosen(err); ok {
 		return code
 	}
 	if u, ok := errors.AsType[*usageError](err); ok {
@@ -178,7 +185,11 @@ func printUsageError(w io.Writer, app *kong.Application, ctx *kong.Context, err 
 	if ctx != nil && ctx.Selected() != nil {
 		node = ctx.Selected()
 	}
-	fmt.Fprintf(w, "%s: error: %v\n", app.Name, err)
+	msg, hint := usageMessage(err.Error(), node)
+	fmt.Fprintf(w, "%s: error: %s\n", app.Name, msg)
+	if hint != "" {
+		fmt.Fprintln(w, hint)
+	}
 	fmt.Fprintf(w, "Usage: %s\n", synopsis(app, node))
 	fmt.Fprintf(w, "Run %q for details.\n", commandLine(app, node)+" --help")
 }
@@ -191,6 +202,18 @@ func Exit(code int) error {
 		return nil
 	}
 	return &exitError{code: code}
+}
+
+// Fail makes a command end with status code after Run prints err the way it
+// prints any failure, "<tool>: error: <err>": for a failure the tool gives a
+// code of its own, such as an ambiguity its callers tell apart. Declare the
+// code in App.ExitCodes so help lists it. Fail(code, nil) is nil, and
+// Fail(0, err) is err.
+func Fail(code int, err error) error {
+	if err == nil || code == 0 {
+		return err
+	}
+	return &failError{code: code, err: err}
 }
 
 // Usage marks err as a usage error the command found itself, such as a
@@ -208,6 +231,14 @@ type exitError struct{ code int }
 
 func (e *exitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
 
+type failError struct {
+	code int
+	err  error
+}
+
+func (e *failError) Error() string { return e.err.Error() }
+func (e *failError) Unwrap() error { return e.err }
+
 type usageError struct{ err error }
 
 func (e *usageError) Error() string { return e.err.Error() }
@@ -220,11 +251,23 @@ type helpWriteError struct{ err error }
 func (e *helpWriteError) Error() string { return "writing help: " + e.err.Error() }
 func (e *helpWriteError) Unwrap() error { return e.err }
 
-func chosenExit(err error) (int, bool) {
+// chosen reports a status the command chose with Exit or Fail, printing a
+// Fail's error first.
+func (a App) chosen(err error) (int, bool) {
 	if e, ok := errors.AsType[*exitError](err); ok {
 		return e.code, true
 	}
+	if f, ok := errors.AsType[*failError](err); ok {
+		fmt.Fprintf(a.Stderr, "%s: error: %v\n", a.Name, f.err)
+		return f.code, true
+	}
 	return 0, false
+}
+
+func hasChild(n *kong.Node, name string) bool {
+	return slices.ContainsFunc(n.Children, func(c *kong.Node) bool {
+		return c.Name == name || slices.Contains(c.Aliases, name)
+	})
 }
 
 type exitSignal int
