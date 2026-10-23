@@ -1,0 +1,21 @@
+Usage: brief [<command>]
+   or: brief [<fragment>] [flags]
+
+brief indexes handoff briefs.
+
+Flags:
+  -h, --help    Show context-sensitive help.
+
+Commands:
+  show [<fragment>]    Show the brief a fragment names (default).
+  exec <args> ...      Run a program with the tool's environment.
+  wait <job>           Wait for a job.
+  login --user=USER --password=PASSWORD
+                       Store credentials.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run
+
+Run "brief <command> --help" for a command's details.

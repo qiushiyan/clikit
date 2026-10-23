@@ -1,0 +1,28 @@
+Usage: tool settle (--keep=MACHINE | --delete) <target> [flags]
+
+Settle a file both machines changed.
+
+Arguments:
+  <target>              Path to settle.
+
+Flags:
+      --keep=MACHINE    Keep this machine's copy.
+      --delete          Delete the file on both machines.
+      --retries=INT     Attempts before giving up (default: 3; env: $CLIKIT_TEST_RETRIES).
+
+Inherited flags:
+  -h, --help            Show context-sensitive help.
+      --json            Print one JSON object instead of text.
+      --home=HOME       Root of the registry (default: ~/.local/state/tool; env: $CLIKIT_TEST_HOME).
+
+Constraints:
+  Exactly one of --keep, --delete.
+
+Output:
+  --json prints one object; text otherwise.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run
+  5    done, but some repositories need attention

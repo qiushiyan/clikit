@@ -1,0 +1,27 @@
+Usage: tool repo add <path> [flags]
+
+Register a repository by its path.
+
+Arguments:
+  <path>             Directory of the checkout to register.
+
+Flags:
+      --name=NAME    Name to register it under.
+      --role=ROLE    What the repository is for (default: tool; one of: tool, lib, notes; env: $CLIKIT_TEST_ROLE).
+
+Inherited flags:
+  -h, --help         Show context-sensitive help.
+      --json         Print one JSON object instead of text.
+      --home=HOME    Root of the registry (default: ~/.local/state/tool; env: $CLIKIT_TEST_HOME).
+
+Output:
+  --json prints one object; text otherwise.
+
+Examples:
+  tool repo add ~/dev/gwt --role tool
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run
+  5    done, but some repositories need attention

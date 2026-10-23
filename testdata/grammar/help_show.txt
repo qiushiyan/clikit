@@ -1,0 +1,17 @@
+Usage: brief show [<fragment>] [flags]
+
+Show the brief a fragment names.
+
+Arguments:
+  <fragment>    Part of a brief's name; the index when omitted (optional).
+
+Flags:
+      --full    Print the whole brief.
+
+Inherited flags:
+  -h, --help    Show context-sensitive help.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run

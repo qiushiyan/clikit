@@ -1,0 +1,21 @@
+Usage: tool list [flags]
+
+List the registered repositories.
+
+Flags:
+      --fetch        Fetch remotes first.
+  -n, --limit=INT    Show at most this many.
+
+Inherited flags:
+  -h, --help         Show context-sensitive help.
+      --json         Print one JSON object instead of text.
+      --home=HOME    Root of the registry (default: ~/.local/state/tool; env: $CLIKIT_TEST_HOME).
+
+Output:
+  --json prints one object; text otherwise.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run
+  5    done, but some repositories need attention

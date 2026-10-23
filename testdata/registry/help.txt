@@ -1,0 +1,36 @@
+Usage: tool <command> [flags]
+
+tool keeps a registry of repositories in step.
+
+A registry of repositories kept in step.
+
+  Indented lines stay as written.
+
+Flags:
+  -h, --help         Show context-sensitive help.
+      --json         Print one JSON object instead of text.
+      --home=HOME    Root of the registry (default: ~/.local/state/tool; env: $CLIKIT_TEST_HOME).
+
+Commands:
+  list                       List the registered repositories.
+  repo add <path>            Register a repository by its path.
+  repo remove <names> ...    Forget repositories; their files stay.
+  settle (--keep=MACHINE | --delete) <target>
+                             Settle a file both machines changed.
+  fail <how>                 Fail the way <how> says.
+  echo                       Copy stdin to stdout.
+
+Output:
+  --json prints one object; text otherwise.
+
+Examples:
+  tool list
+  tool repo add ~/dev/gwt
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run
+  5    done, but some repositories need attention
+
+Run "tool <command> --help" for a command's details.

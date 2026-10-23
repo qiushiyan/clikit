@@ -1,0 +1,19 @@
+Usage: brief wait <job> [flags]
+
+Wait for a job.
+
+Arguments:
+  <job>                     Job to wait for.
+
+Flags:
+      --timeout=DURATION    Give up after this long (default: 30s).
+      --every=NUMBER        Seconds between checks (default: 0.5).
+      --count=INT,...       Exit codes that count as done (repeatable).
+
+Inherited flags:
+  -h, --help                Show context-sensitive help.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run

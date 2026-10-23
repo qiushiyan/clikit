@@ -1,0 +1,15 @@
+Usage: brief login --user=USER --password=PASSWORD
+
+Store credentials.
+
+Flags:
+      --user=USER            Account name (required).
+      --password=PASSWORD    Account password (required).
+
+Inherited flags:
+  -h, --help                 Show context-sensitive help.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run

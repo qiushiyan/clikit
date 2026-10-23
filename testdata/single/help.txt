@@ -1,0 +1,19 @@
+Usage: open [<path>] [flags]
+
+open shows the checkout on GitHub.
+
+Arguments:
+  <path>         File to open; the repository root when omitted (optional).
+
+Flags:
+  -h, --help     Show context-sensitive help.
+  -p, --print    Print the URL instead of opening it.
+
+Examples:
+  open README.md:10
+  open -p
+
+Exit codes:
+  0    opened, or printed with --print
+  1    failed
+  2    invalid arguments; nothing was run

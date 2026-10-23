@@ -1,0 +1,230 @@
+package clikit
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
+
+	"github.com/alecthomas/kong"
+)
+
+// App is one tool's whole command line: main runs it and its tests run the
+// same value, so nothing about the tool is assembled twice.
+type App struct {
+	// Name is the program name in help and error lines. Empty means the base
+	// name of os.Args[0].
+	Name string
+
+	// Description says what the tool is for; required.
+	Description string
+
+	// New returns a fresh grammar, a pointer to the root command struct. Every
+	// invocation gets its own, since parsing writes into it.
+	New func() any
+
+	// Options are Kong options: kong.Bind, kong.BindToProvider, kong.Vars,
+	// mappers and so on. They are shared by every invocation, so they must not
+	// capture a grammar instance; a provider or Run method that needs the
+	// parsed root takes it as a parameter (func(cli *CLI) (*Store, error)).
+	Options []kong.Option
+
+	// ExitCodes adds the statuses the tool's commands return through Exit,
+	// with their meaning. 0, UsageCode and FailureCode are always listed; an
+	// entry here rewords one of them.
+	ExitCodes map[int]string
+
+	// UsageCode is the exit status for invalid argv. Zero means 2.
+	UsageCode int
+
+	// FailureCode is the exit status for every other failure. Zero means 1.
+	FailureCode int
+
+	// Stdin is bound for Run methods as an io.Reader. Nil means os.Stdin.
+	Stdin io.Reader
+
+	// Stdout and Stderr become ctx.Stdout and ctx.Stderr of the bound
+	// *kong.Context, unwrapped. Nil means os.Stdout and os.Stderr.
+	Stdout, Stderr io.Writer
+}
+
+func (a App) withDefaults() App {
+	if a.Name == "" {
+		a.Name = filepath.Base(os.Args[0])
+	}
+	if a.UsageCode == 0 {
+		a.UsageCode = 2
+	}
+	if a.FailureCode == 0 {
+		a.FailureCode = 1
+	}
+	if a.Stdin == nil {
+		a.Stdin = os.Stdin
+	}
+	if a.Stdout == nil {
+		a.Stdout = os.Stdout
+	}
+	if a.Stderr == nil {
+		a.Stderr = os.Stderr
+	}
+	return a
+}
+
+// kongUsageExit is the status Kong attaches to a ParseError caused by argv
+// itself (tracing and validation). Every other ParseError comes from hooks,
+// environment variables or defaults.
+const kongUsageExit = 80
+
+// Run parses args (without the program name), runs the selected command and
+// returns the process exit status. It never calls os.Exit.
+func (a App) Run(args []string) (code int) {
+	a = a.withDefaults()
+	if a.New == nil {
+		fmt.Fprintf(a.Stderr, "%s: error: invalid command declaration: App.New is nil\n", a.Name)
+		return a.FailureCode
+	}
+
+	stdin := a.Stdin
+	exit := func(code int) { panic(exitSignal(code)) }
+	// clikit's settings go last, and again after every PostBuild option, so no
+	// option can stop help from ending the run or send it elsewhere.
+	own := func(k *kong.Kong) error {
+		k.Exit = exit
+		k.Stdout, k.Stderr = a.Stdout, a.Stderr
+		return kong.Help(printHelp(a)).Apply(k)
+	}
+	opts := append(slices.Clone(a.Options),
+		kong.Name(a.Name),
+		kong.Description(a.Description),
+		kong.BindTo(stdin, (*io.Reader)(nil)),
+		kong.WithBeforeApply(checkEnvEnums),
+		kong.OptionFunc(own),
+		kong.PostBuild(own),
+	)
+	k, err := kong.New(a.New(), opts...)
+	if err == nil {
+		err = checkDeclaration(k)
+	}
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "%s: error: invalid command declaration: %v\n", a.Name, err)
+		return a.FailureCode
+	}
+
+	// Kong ends help (and --version) by calling its Exit hook and then
+	// returning normally, so the hook panics with exitSignal to stop parsing
+	// before any later hook, resolver or command runs.
+	defer func() {
+		if r := recover(); r != nil {
+			sig, ok := r.(exitSignal)
+			if !ok {
+				panic(r)
+			}
+			code = int(sig)
+		}
+	}()
+
+	ctx, err := k.Parse(args)
+	if err != nil {
+		return a.parseFailure(k.Model, err)
+	}
+	return a.commandOutcome(ctx, ctx.Run())
+}
+
+func (a App) parseFailure(app *kong.Application, err error) int {
+	if code, ok := chosenExit(err); ok {
+		return code
+	}
+	if hw, ok := errors.AsType[*helpWriteError](err); ok {
+		fmt.Fprintf(a.Stderr, "%s: error: writing help: %v\n", a.Name, hw.err)
+		return a.FailureCode
+	}
+	var ctx *kong.Context
+	if pe, ok := errors.AsType[*kong.ParseError](err); ok {
+		ctx = pe.Context
+		if pe.ExitCode() == kongUsageExit {
+			printUsageError(a.Stderr, app, ctx, pe.Unwrap())
+			return a.UsageCode
+		}
+	}
+	if u, ok := errors.AsType[*usageError](err); ok {
+		printUsageError(a.Stderr, app, ctx, u.err)
+		return a.UsageCode
+	}
+	fmt.Fprintf(a.Stderr, "%s: error: %v\n", a.Name, err)
+	return a.FailureCode
+}
+
+func (a App) commandOutcome(ctx *kong.Context, err error) int {
+	if err == nil {
+		return 0
+	}
+	if code, ok := chosenExit(err); ok {
+		return code
+	}
+	if u, ok := errors.AsType[*usageError](err); ok {
+		printUsageError(a.Stderr, ctx.Model, ctx, u.err)
+		return a.UsageCode
+	}
+	fmt.Fprintf(a.Stderr, "%s: error: %v\n", a.Name, err)
+	return a.FailureCode
+}
+
+// printUsageError writes the error, the synopsis of the command it concerns
+// and where to read more, so a caller can correct argv without a second run.
+func printUsageError(w io.Writer, app *kong.Application, ctx *kong.Context, err error) {
+	node := app.Node
+	if ctx != nil && ctx.Selected() != nil {
+		node = ctx.Selected()
+	}
+	fmt.Fprintf(w, "%s: error: %v\n", app.Name, err)
+	fmt.Fprintf(w, "Usage: %s\n", synopsis(app, node))
+	fmt.Fprintf(w, "Run %q for details.\n", commandLine(app, node)+" --help")
+}
+
+// Exit makes a command end with status code without printing anything more:
+// the command has already reported what happened. Declare the code in
+// App.ExitCodes so help lists it. Exit(0) is nil.
+func Exit(code int) error {
+	if code == 0 {
+		return nil
+	}
+	return &exitError{code: code}
+}
+
+// Usage marks err as a usage error the command found itself, such as a
+// combination of flags its declaration cannot express. Run prints it with the
+// command's synopsis and exits with App.UsageCode. It classifies the outcome
+// only: return it before the command has changed anything.
+func Usage(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &usageError{err: err}
+}
+
+type exitError struct{ code int }
+
+func (e *exitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
+
+type usageError struct{ err error }
+
+func (e *usageError) Error() string { return e.err.Error() }
+func (e *usageError) Unwrap() error { return e.err }
+
+// helpWriteError is a failure to write the help page, reported as a failure
+// rather than as the usage error Kong would wrap it in.
+type helpWriteError struct{ err error }
+
+func (e *helpWriteError) Error() string { return "writing help: " + e.err.Error() }
+func (e *helpWriteError) Unwrap() error { return e.err }
+
+func chosenExit(err error) (int, bool) {
+	if e, ok := errors.AsType[*exitError](err); ok {
+		return e.code, true
+	}
+	return 0, false
+}
+
+type exitSignal int
