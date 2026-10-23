@@ -6,9 +6,13 @@ clikit is the invocation and help contract shared by the Go CLIs in `~/dev`: a
 tool declares its commands as native Kong structs, describes itself once as a
 `clikit.App`, and main and its tests run that same value. Agents learn these
 tools from `--help`, so a help page that disagrees with the parser is a wrong
-instruction to an agent. Every rule below protects that. `doc.go` is the
-contract as consumers read it; how a tool uses clikit is the go-cli skill's
-(`~/dotfiles/claude/.claude/skills/go-cli/SKILL.md`).
+instruction to an agent. Every rule below protects that.
+
+- **The consumer contract:** `doc.go`.
+- **How one run flows, and the decisions with the alternatives they beat:**
+  `docs/design.md`; read it before proposing a different shape.
+- **How a tool uses clikit:** the go-cli skill,
+  `~/dotfiles/claude/.claude/skills/go-cli/SKILL.md`.
 
 ## Commands
 
@@ -61,4 +65,9 @@ the test that pins it.
 The module is public at `github.com/qiushiyan/clikit` and consumed by tag.
 Release by tagging `vX.Y.Z` on `main` and pushing the tag; a change to help
 output or to the public surface is visible in every consumer's golden pages,
-so say so in the tag message.
+so say so in the tag message. A change to the public surface also updates the
+go-cli skill's clikit section in the same pass, since tools are written from
+it.
+
+Docs follow `~/dotfiles/docs/documentation-standards.md`, with paths written
+from the repository root.
