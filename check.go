@@ -22,7 +22,6 @@ func checkDeclaration(k *kong.Kong) error {
 	if app.HelpFlag == nil {
 		problems = append(problems, "kong.NoDefaultHelp removes --help, which every tool must answer")
 	}
-	seenXor := map[string]bool{}
 	var walk func(n *kong.Node)
 	walk = func(n *kong.Node) {
 		where := location(app, n)
@@ -31,7 +30,7 @@ func checkDeclaration(k *kong.Kong) error {
 			return
 		}
 		if n.Type == kong.CommandNode && !n.Hidden && strings.TrimSpace(n.Help) == "" {
-			problems = append(problems, "command "+strings.TrimPrefix(where, " of ")+" has no help")
+			problems = append(problems, "command "+strings.Join(pathBelow(n, nil), " ")+" has no help")
 		}
 		for _, f := range n.Flags {
 			if !f.Hidden && strings.TrimSpace(f.Help) == "" {
@@ -46,25 +45,6 @@ func checkDeclaration(k *kong.Kong) error {
 		for _, v := range n.Values() {
 			if v.Enum != "" && v.HasDefault && !v.IsCumulative() && !v.EnumMap()[v.Default] {
 				problems = append(problems, fmt.Sprintf("%s%s defaults to %q, which is not one of its values", valueName(v), where, v.Default))
-			}
-		}
-		scope := scopeFlags(n)
-		for _, f := range scope {
-			for _, key := range f.Xor {
-				if seenXor[key] {
-					continue
-				}
-				members := groupMembers(scope, key)
-				required := 0
-				for _, m := range members {
-					if m.Required {
-						required++
-					}
-				}
-				if required > 0 && required < len(members) {
-					seenXor[key] = true
-					problems = append(problems, fmt.Sprintf("xor group %q marks only some of %s required, so Kong requires none: mark all or none", key, flagNames(members)))
-				}
 			}
 		}
 		problems = append(problems, groupProblems(app, n)...)
@@ -87,86 +67,78 @@ func location(app *kong.Application, n *kong.Node) string {
 	return " of " + strings.TrimPrefix(commandLine(app, n), app.Name+" ")
 }
 
-// group is a flag group as Kong keys it.
-type group struct{ kind, key string }
-
-func groupsOf(f *kong.Flag) []group {
-	var out []group
-	for _, key := range f.Xor {
-		out = append(out, group{"xor", key})
-	}
-	for _, key := range f.And {
-		out = append(out, group{"and", key})
-	}
-	return out
-}
-
 // usesGroup reports whether a flag of n, or of a command below it, is in g.
-func usesGroup(n *kong.Node, g group) bool {
-	for _, f := range n.Flags {
-		if slices.Contains(groupsOf(f), g) {
-			return true
-		}
-	}
-	return slices.ContainsFunc(n.Children, func(c *kong.Node) bool { return usesGroup(c, g) })
+func usesGroup(n *kong.Node, g *flagGroup) bool {
+	return slices.ContainsFunc(n.Flags, g.tags) ||
+		slices.ContainsFunc(n.Children, func(c *kong.Node) bool { return usesGroup(c, g) })
 }
 
 // groupProblems reports the groups of n's flags that Kong does not check the
 // way help states them. Kong checks a group among one command's flags,
 // hidden ones included, so a group spanning commands is never checked; it
-// never requires a flag alone in its group; a member of a required xor group
-// that is also in an and group makes Kong demand that group whichever member
-// is given; and Kong takes a flag's requirement from its last and group.
+// demands a group only while more than one of its required members is
+// missing, so it never requires a flag alone in its group, and an xor group
+// with only some members required demands less than its tags say; a member
+// of a required xor group that is also in an and group makes Kong demand
+// that group whichever member is given; and Kong takes a flag's requirement
+// from its last and group.
 func groupProblems(app *kong.Application, n *kong.Node) []string {
-	var groups []group
-	members := map[group][]*kong.Flag{}
-	for _, f := range n.Flags {
-		for _, g := range groupsOf(f) {
-			if members[g] == nil {
-				groups = append(groups, g)
-			}
-			members[g] = append(members[g], f)
-		}
-	}
 	where := location(app, n)
 	var problems []string
 	reported := map[*kong.Flag]bool{}
-	for _, g := range groups {
-		flags := members[g]
+	for _, g := range groupsOf(n.Flags) {
 		var spans []string
 		for p := n.Parent; p != nil; p = p.Parent {
 			for _, f := range p.Flags {
-				if slices.Contains(groupsOf(f), g) {
+				if g.tags(f) {
 					spans = append(spans, "--"+f.Name+location(app, p))
 				}
 			}
 		}
 		if len(spans) > 0 {
 			slices.Reverse(spans)
-			for _, f := range flags {
+			for _, f := range g.members {
 				spans = append(spans, "--"+f.Name+where)
 			}
 			problems = append(problems, fmt.Sprintf("%s group %q spans %s, but Kong checks a group within one command: declare its flags on one command, or give each command's group its own name", g.kind, g.key, strings.Join(spans, ", ")))
 			continue
 		}
-		// A command below reports a group that spans down to it; a group with
-		// no required member is checked as declared.
-		if slices.ContainsFunc(n.Children, func(c *kong.Node) bool { return usesGroup(c, g) }) ||
-			!slices.ContainsFunc(flags, func(f *kong.Flag) bool { return f.Required }) {
+		// A command below reports a group that spans down to it.
+		if slices.ContainsFunc(n.Children, func(c *kong.Node) bool { return usesGroup(c, g) }) {
 			continue
 		}
-		if len(flags) == 1 {
-			problems = append(problems, fmt.Sprintf("required %s group %q has only --%s%s, and Kong never requires a flag alone in its group: give the group another flag or drop it", g.kind, g.key, flags[0].Name, where))
+		if g.kind == xorGroup {
+			// Help states the group by its visible members.
+			var shown []*kong.Flag
+			required := 0
+			for _, f := range g.members {
+				if !f.Hidden {
+					shown = append(shown, f)
+					if f.Required {
+						required++
+					}
+				}
+			}
+			if required > 0 && required < len(shown) {
+				problems = append(problems, fmt.Sprintf("xor group %q marks only some of %s required, so Kong requires less than the tags say: mark all or none", g.key, flagNames(shown)))
+				continue
+			}
+		}
+		switch {
+		case !g.hasRequiredMember():
+			continue // checked as declared
+		case len(g.members) == 1:
+			problems = append(problems, fmt.Sprintf("required %s group %q has only --%s%s, and Kong never requires a flag alone in its group: give the group another flag or drop it", g.kind, g.key, g.members[0].Name, where))
 			continue
 		}
-		for _, f := range flags {
-			i := slices.IndexFunc(groupsOf(f), func(o group) bool { return o.kind == "and" && o != g })
+		for _, f := range g.members {
+			i := slices.IndexFunc(f.And, func(key string) bool { return g.kind != andGroup || key != g.key })
 			if i < 0 || reported[f] {
 				continue
 			}
-			and := groupsOf(f)[i].key
+			and := f.And[i]
 			switch {
-			case g.kind == "xor":
+			case g.kind == xorGroup:
 				problems = append(problems, fmt.Sprintf("flag --%s%s is in required xor group %q and in and group %q, so Kong demands all of %q even when another flag of %q is given: keep it to one group", f.Name, where, g.key, and, and, g.key))
 			case !f.Required:
 				problems = append(problems, fmt.Sprintf("flag --%s%s is in required and group %q and in and group %q without being required itself, so what Kong requires depends on the order of its groups: mark it required or keep it to one and group", f.Name, where, g.key, and))

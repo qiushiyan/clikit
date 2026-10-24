@@ -32,9 +32,10 @@ go test -run TestGrammarHelp .
 - **Help ends the run before anything else happens.** Kong's help hook calls
   `Exit(0)` and then returns, so the exit hook panics with `exitSignal` and
   `Run` recovers only that type. Help fires in `BeforeReset`, before
-  environment variables, resolvers and later hooks, and `own` in `run.go` is
-  applied last and again as a `PostBuild`, so no consumer option can take
-  this away.
+  environment variables, resolvers and later hooks. `own` in `run.go` is
+  applied after every option, so a tool's own `PostBuild` already sees the
+  App's writers, and again as the last `PostBuild`, so no consumer option can
+  take this away; each application has a test.
 - **Help is rendered from the model, in `help.go`.** It never delegates to
   `kong.DefaultHelpPrinter`, which misstates xor groups and reflows prose.
   Authored text (`Help()`, sections) prints verbatim. A Kong form the renderer
@@ -54,7 +55,8 @@ go test -run TestGrammarHelp .
   Kong's own lines and the help page agree.
 - **Writers pass through unwrapped.** `ctx.Stdout` is the `App.Stdout` itself,
   so an `*os.File` stays one for terminal detection and nothing shared can
-  race; help write errors come back as `helpWriteError` instead. Concurrent
+  race. The help printer reports a failed write as an error that wraps
+  nothing, so whatever the writer returned it stays a failure. Concurrent
   capture is `clikittest`'s job (its locked buffer).
 - **An App is reused across invocations.** `New` builds a fresh grammar per
   run and `Options` must not capture one; providers take the root as a
@@ -62,11 +64,14 @@ go test -run TestGrammarHelp .
 
 ## Tests and releases
 
-Each rule above has a test in `run_test.go` (`TestOptionsCannotUndoHelp`,
-`TestStdoutKeepsItsIdentity`, `TestEnumFromEnvironmentIsAFailure`, …), and the
-golden pages under `testdata/` pin rendering for a multi-command tool, a
-single-command tool and the rarer grammar forms. A behaviour change lands with
-the test that pins it.
+Each rule above has a test beside the file that owns it: `run_test.go` for
+running and outcomes (`TestOptionsCannotUndoHelp`,
+`TestStdoutKeepsItsIdentity`, `TestEnumFromEnvironmentIsAFailure`, …),
+`help_test.go` for rendering and `TestUsageMessages`, `check_test.go` for the
+rejections. The golden pages under `testdata/` are the one place help bytes
+are pinned: a multi-command tool, a single-command tool, the rarer grammar
+forms and the flag groups help states. A behaviour change lands with the test
+that pins it.
 
 The module is public at `github.com/qiushiyan/clikit` and consumed by tag.
 Release by tagging `vX.Y.Z` on `main` and pushing the tag; a change to help

@@ -15,5 +15,4 @@ Examples:
 
 Exit codes:
   0    opened, or printed with --print
-  1    failed
-  2    invalid arguments; nothing was run
+  1    failed, or invalid arguments (then nothing was run)

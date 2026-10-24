@@ -1,0 +1,23 @@
+Usage: g pick (--north | --south) (--north | --east) (--east | --west) [flags]
+
+Pick a direction.
+
+Flags:
+      --north    Go north.
+      --south    Go south.
+      --east     Go east.
+      --west     Go west.
+      --quiet    Say less.
+
+Inherited flags:
+  -h, --help     Show context-sensitive help.
+
+Constraints:
+  Exactly one of --north, --south.
+  Exactly one of --north, --east.
+  Exactly one of --east, --west.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run

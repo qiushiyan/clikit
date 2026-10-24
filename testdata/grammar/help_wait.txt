@@ -9,6 +9,8 @@ Flags:
       --timeout=DURATION    Give up after this long (default: 30s).
       --every=NUMBER        Seconds between checks (default: 0.5).
       --count=INT,...       Exit codes that count as done (repeatable).
+      --hook=HOOK           Address to call when it is done:
+                            https://hooks.example.com/brief/v1/jobs/wait/notify-when-every-check-has-passed.
 
 Inherited flags:
   -h, --help                Show context-sensitive help.

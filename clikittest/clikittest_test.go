@@ -5,7 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/alecthomas/kong"
+	"github.com/qiushiyan/clikit"
 )
 
 // recordingTB keeps the failures compare reports instead of failing this test.
@@ -79,17 +83,21 @@ func TestCompareRefusesSharedFileNames(t *testing.T) {
 	}
 }
 
+// CLIKIT_UPDATE=1, and only 1, rewrites the golden files: stale content is
+// replaced, files no page produced are removed, and the next comparison passes.
 func TestCompareUpdatesOnlyOnOne(t *testing.T) {
 	dir := t.TempDir()
+	pages := map[string]string{"": "root\n", "repo add": "add\n"}
 	t.Setenv("CLIKIT_UPDATE", "0")
-	recordCompare(t, dir, map[string]string{"": "root\n"})
+	recordCompare(t, dir, pages)
 	if _, err := os.Stat(filepath.Join(dir, "help.txt")); err == nil {
 		t.Fatal("CLIKIT_UPDATE=0 wrote a golden file")
 	}
 
 	t.Setenv("CLIKIT_UPDATE", "1")
+	writeFile(t, dir, "help.txt", "stale\n")
 	writeFile(t, dir, "help_gone.txt", "x")
-	compare(t, dir, map[string]string{"": "root\n", "repo add": "add\n"})
+	compare(t, dir, pages)
 	files, _ := filepath.Glob(filepath.Join(dir, "*"))
 	var names []string
 	for _, f := range files {
@@ -97,5 +105,30 @@ func TestCompareUpdatesOnlyOnOne(t *testing.T) {
 	}
 	if got := strings.Join(names, ","); got != "help.txt,help_repo_add.txt" {
 		t.Fatalf("files after update: %s", got)
+	}
+
+	t.Setenv("CLIKIT_UPDATE", "")
+	if tb := recordCompare(t, dir, pages); len(tb.errs) > 0 || tb.fatal != "" {
+		t.Fatalf("the updated files do not match the pages: %v %s", tb.errs, tb.fatal)
+	}
+}
+
+type chatty struct{}
+
+func (chatty) Run(ctx *kong.Context) error {
+	var wg sync.WaitGroup
+	for i := range 10 {
+		wg.Go(func() { fmt.Fprintf(ctx.Stdout, "line %d\n", i) })
+	}
+	wg.Wait()
+	return nil
+}
+
+// Run captures a command that writes from several goroutines; under -race this
+// fails if the capture is not locked.
+func TestRunCapturesConcurrentWrites(t *testing.T) {
+	app := clikit.App{Name: "c", Description: "c writes from goroutines.", New: func() any { return &chatty{} }}
+	if r := Run(app); r.Code != 0 || strings.Count(r.Stdout, "\n") != 10 {
+		t.Fatalf("%+v", r)
 	}
 }

@@ -53,14 +53,17 @@ func (b *lockedBuffer) String() string {
 // must exit 0 with nothing on stderr.
 func helpPages(t testing.TB, app clikit.App) map[string]string {
 	t.Helper()
-	if r := Run(app, "--help"); r.Code != 0 || r.Stderr != "" {
-		t.Fatalf("--help: exit %d, stderr:\n%s", r.Code, r.Stderr)
+	// A root page that fails means the declaration does, which every page
+	// would repeat.
+	root := Run(app, "--help")
+	if root.Code != 0 || root.Stderr != "" {
+		t.Fatalf("--help: exit %d, stderr:\n%s", root.Code, root.Stderr)
 	}
 	k, err := kong.New(app.New(), app.Options...)
 	if err != nil {
 		t.Fatalf("building the grammar: %v", err)
 	}
-	pages := map[string]string{}
+	pages := map[string]string{"": root.Stdout}
 	for _, path := range commandPaths(k.Model.Node, nil) {
 		args := append(slices.Clone(path), "--help")
 		r := Run(app, args...)
@@ -73,11 +76,14 @@ func helpPages(t testing.TB, app clikit.App) map[string]string {
 	return pages
 }
 
+// commandPaths are the paths of every visible command below n.
 func commandPaths(n *kong.Node, prefix []string) [][]string {
-	out := [][]string{prefix}
+	var out [][]string
 	for _, c := range n.Children {
 		if !c.Hidden {
-			out = append(out, commandPaths(c, append(slices.Clone(prefix), c.Name))...)
+			path := append(slices.Clone(prefix), c.Name)
+			out = append(out, path)
+			out = append(out, commandPaths(c, path)...)
 		}
 	}
 	return out

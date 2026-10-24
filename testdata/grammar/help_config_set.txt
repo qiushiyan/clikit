@@ -1,0 +1,15 @@
+Usage: brief config set <key> <value>
+
+Set one key.
+
+Arguments:
+  <key>         Key to set.
+  <value>       Its new value.
+
+Inherited flags:
+  -h, --help    Show context-sensitive help.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run

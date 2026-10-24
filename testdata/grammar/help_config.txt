@@ -1,0 +1,16 @@
+Usage: brief config [<command>]
+
+Print the configuration, or change one key.
+
+Inherited flags:
+  -h, --help    Show context-sensitive help.
+
+Commands:
+  set <key> <value>    Set one key.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run
+
+Run "brief config <command> --help" for a command's details.

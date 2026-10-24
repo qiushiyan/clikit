@@ -1,0 +1,19 @@
+Usage: g <command>
+
+g groups flags.
+
+Flags:
+  -h, --help    Show context-sensitive help.
+
+Commands:
+  connect --host=HOST --path=PATH --port=INT --mirror=MIRROR --into=INTO
+      Connect to a host.
+  pick (--north | --south) (--north | --east) (--east | --west)
+      Pick a direction.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run
+
+Run "g <command> --help" for a command's details.

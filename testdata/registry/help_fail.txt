@@ -3,7 +3,7 @@ Usage: tool fail <how> [flags]
 Fail the way <how> says.
 
 Arguments:
-  <how>              Which failure to return (one of: exit, usage, error).
+  <how>              Which failure to return (one of: exit, fail, usage, error).
 
 Inherited flags:
   -h, --help         Show context-sensitive help.

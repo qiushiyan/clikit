@@ -1,0 +1,27 @@
+Usage: g connect --host=HOST --path=PATH --port=INT --mirror=MIRROR --into=INTO [flags]
+
+Connect to a host.
+
+Flags:
+      --user=USER            Account name.
+      --password=PASSWORD    Account password.
+      --token=TOKEN          API token.
+      --host=HOST            Host (required).
+      --path=PATH            Path (required).
+      --port=INT             Port (required).
+      --mirror=MIRROR        Mirror to copy (required).
+      --local=LOCAL          Local directory.
+      --into=INTO            Destination (required).
+
+Inherited flags:
+  -h, --help                 Show context-sensitive help.
+
+Constraints:
+  At most one of --user, --token.
+  All or none of --user, --password.
+  At most one of --mirror, --local.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run

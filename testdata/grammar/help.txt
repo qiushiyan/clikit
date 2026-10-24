@@ -11,11 +11,18 @@ Arguments and flags of show, the default command:
       --full    Print the whole brief.
 
 Commands:
-  show [<fragment>]    Show the brief a fragment names (default).
-  exec <args> ...      Run a program with the tool's environment.
-  wait <job>           Wait for a job.
+  show [<fragment>]           Show the brief a fragment names (default).
+  exec <args> ...             Run a program with the tool's environment.
+  wait <job>                  Wait for a job.
   login --user=USER --password=PASSWORD
-                       Store credentials.
+                              Store credentials.
+  config [<command>]          Print the configuration, or change one key.
+  config set <key> <value>    Set one key.
+
+Notes:
+  A brief is one Markdown file whose name is its slug and whose folder is its domain; nothing else indexes it.
+
+  Authored lines stay as written, however long.
 
 Exit codes:
   0    success

@@ -43,15 +43,22 @@ const lineWidth = 100
 
 func printHelp(a App) kong.HelpPrinter {
 	return func(_ kong.HelpOptions, ctx *kong.Context) error {
-		node := ctx.Selected()
-		if node == nil {
-			node = ctx.Model.Node
-		}
-		if _, err := io.WriteString(ctx.Stdout, page(a, ctx.Model, node)); err != nil {
-			return &helpWriteError{err: err}
+		if _, err := io.WriteString(ctx.Stdout, page(a, ctx.Model, selected(ctx.Model, ctx))); err != nil {
+			// %v, not %w: whatever the writer's error wraps, a help page that
+			// could not be written is a failure, never a usage error or a status.
+			return fmt.Errorf("writing help: %v", err)
 		}
 		return nil
 	}
+}
+
+// selected is the command ctx selected, or the root when it selected none or
+// parsing failed before there was a context.
+func selected(app *kong.Application, ctx *kong.Context) *kong.Node {
+	if ctx != nil && ctx.Selected() != nil {
+		return ctx.Selected()
+	}
+	return app.Node
 }
 
 // page renders the full help for node: synopsis, description, arguments,
@@ -59,8 +66,9 @@ func printHelp(a App) kong.HelpPrinter {
 func page(a App, app *kong.Application, n *kong.Node) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Usage: %s\n", synopsis(app, n))
-	if d := n.DefaultCmd; d != nil && d.Tag.Default == "withargs" {
-		fmt.Fprintf(&b, "   or: %s\n", usageLine(commandLine(app, n), d, n))
+	deflt := defaultWithArgs(n)
+	if deflt != nil {
+		fmt.Fprintf(&b, "   or: %s\n", usageLine(commandLine(app, n), deflt, n))
 	}
 	if help := strings.TrimSpace(n.Help); help != "" {
 		fmt.Fprintf(&b, "\n%s\n", help)
@@ -69,44 +77,27 @@ func page(a App, app *kong.Application, n *kong.Node) string {
 		fmt.Fprintf(&b, "\n%s\n", detail)
 	}
 
-	scope := scopeFlags(n)
-	var args []row
-	for _, p := range n.Positional {
-		if !p.Tag.Hidden {
-			args = append(args, row{positionalLabel(p), positionalHelp(p, n.Passthrough)})
-		}
-	}
-	var own, inherited []row
-	for _, f := range visibleFlags(n) {
-		own = append(own, row{flagLabel(f), flagHelp(f, scope)})
-	}
+	sc := scopeOf(n)
+	args := positionalRows(n)
+	own := flagRows(visibleFlags(n), sc)
+	var inherited []row
 	for p := n.Parent; p != nil; p = p.Parent {
-		for _, f := range visibleFlags(p) {
-			inherited = append(inherited, row{flagLabel(f), flagHelp(f, scope)})
-		}
+		inherited = append(inherited, flagRows(visibleFlags(p), sc)...)
 	}
 	// A default command's arguments and flags parse at this level too, so
 	// this page lists them.
-	var deflt []row
-	if d := n.DefaultCmd; d != nil && d.Tag.Default == "withargs" {
-		dscope := scopeFlags(d)
-		for _, p := range d.Positional {
-			if !p.Tag.Hidden {
-				deflt = append(deflt, row{positionalLabel(p), positionalHelp(p, d.Passthrough)})
-			}
-		}
-		for _, f := range visibleFlags(d) {
-			deflt = append(deflt, row{flagLabel(f), flagHelp(f, dscope)})
-		}
+	var defaultRows []row
+	if deflt != nil {
+		defaultRows = append(positionalRows(deflt), flagRows(visibleFlags(deflt), scopeOf(deflt))...)
 	}
-	width := labelWidth(args, own, inherited, deflt)
+	width := labelWidth(args, own, inherited, defaultRows)
 	writeRows(&b, "Arguments", args, width)
 	writeRows(&b, "Flags", own, width)
 	writeRows(&b, "Inherited flags", inherited, width)
-	if len(deflt) > 0 {
-		writeRows(&b, fmt.Sprintf("Arguments and flags of %s, the default command", n.DefaultCmd.Name), deflt, width)
+	if len(defaultRows) > 0 {
+		writeRows(&b, fmt.Sprintf("Arguments and flags of %s, the default command", deflt.Name), defaultRows, width)
 	}
-	writeRows(&b, "Constraints", constraints(scope), 0)
+	writeRows(&b, "Constraints", constraints(sc), 0)
 
 	var cmds []row
 	for _, c := range runnableBelow(n) {
@@ -130,6 +121,33 @@ func page(a App, app *kong.Application, n *kong.Node) string {
 	return b.String()
 }
 
+// defaultWithArgs is n's default command when its arguments and flags parse
+// at n's level (default:"withargs"), or nil.
+func defaultWithArgs(n *kong.Node) *kong.Node {
+	if d := n.DefaultCmd; d != nil && d.Tag.Default == "withargs" {
+		return d
+	}
+	return nil
+}
+
+func positionalRows(n *kong.Node) []row {
+	var rows []row
+	for _, p := range n.Positional {
+		if !p.Tag.Hidden {
+			rows = append(rows, row{positionalLabel(p), positionalHelp(p, n.Passthrough)})
+		}
+	}
+	return rows
+}
+
+func flagRows(flags []*kong.Flag, sc scope) []row {
+	rows := make([]row, len(flags))
+	for i, f := range flags {
+		rows[i] = row{flagLabel(f), flagHelp(f, sc)}
+	}
+	return rows
+}
+
 // synopsis is the one-line usage of n: its command path, required flags (a
 // required xor group as alternatives), positional arguments, a command slot
 // when it has subcommands, and [flags] when optional flags apply.
@@ -151,25 +169,27 @@ func usageLine(prefix string, n, stop *kong.Node) string {
 // declared below stop count (all of them when stop is nil); groups are judged
 // against every flag in n's scope. optional reports flags left out of parts.
 func usageParts(n, stop *kong.Node) (parts []string, optional bool) {
-	scope := scopeFlags(n)
-	seenXor := map[string]bool{}
+	sc := scopeOf(n)
+	seen := map[*flagGroup]bool{}
 	for _, f := range flagsBelow(n, stop) {
 		if isHelpFlag(f) {
 			continue
 		}
+		xors := sc.requiredXors(f)
 		switch {
-		case len(f.Xor) > 0 && groupRequired(scope, f.Xor[0]):
-			key := f.Xor[0]
-			if seenXor[key] {
-				continue
+		case len(xors) > 0:
+			for _, g := range xors {
+				if seen[g] {
+					continue
+				}
+				seen[g] = true
+				alts := make([]string, len(g.members))
+				for i, m := range g.members {
+					alts[i] = flagUsage(m)
+				}
+				parts = append(parts, "("+strings.Join(alts, " | ")+")")
 			}
-			seenXor[key] = true
-			var alts []string
-			for _, m := range groupMembers(scope, key) {
-				alts = append(alts, flagUsage(m))
-			}
-			parts = append(parts, "("+strings.Join(alts, " | ")+")")
-		case required(f, scope):
+		case sc.required(f):
 			parts = append(parts, flagUsage(f))
 		default:
 			optional = true
@@ -205,12 +225,6 @@ func pathBelow(n, stop *kong.Node) []string {
 	return path
 }
 
-// scopeFlags are the visible flags that apply to n: its own and its
-// ancestors', outermost first.
-func scopeFlags(n *kong.Node) []*kong.Flag {
-	return flagsBelow(n, nil)
-}
-
 // flagsBelow are the visible flags of n and its ancestors below stop,
 // outermost first.
 func flagsBelow(n, stop *kong.Node) []*kong.Flag {
@@ -240,80 +254,26 @@ func isHelpFlag(f *kong.Flag) bool {
 	return t.PkgPath() == "github.com/alecthomas/kong" && t.Name() == "helpFlag"
 }
 
-func groupMembers(flags []*kong.Flag, xor string) []*kong.Flag {
-	var out []*kong.Flag
-	for _, f := range flags {
-		if slices.Contains(f.Xor, xor) {
-			out = append(out, f)
-		}
-	}
-	return out
-}
-
-// groupRequired reports whether Kong demands one member of the xor group.
-// checkDeclaration has ensured its members are all required or none is.
-func groupRequired(flags []*kong.Flag, xor string) bool {
-	return slices.ContainsFunc(groupMembers(flags, xor), func(f *kong.Flag) bool { return f.Required })
-}
-
-// andRequired reports whether f belongs to an and group with a required
-// member: Kong then requires every member. checkDeclaration has ensured that a
-// member not required itself is in no other and group, so this one step finds
-// every flag Kong requires.
-func andRequired(f *kong.Flag, scope []*kong.Flag) bool {
-	for _, key := range f.And {
-		for _, m := range scope {
-			if m.Required && slices.Contains(m.And, key) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func required(f *kong.Flag, scope []*kong.Flag) bool {
-	return f.Required || andRequired(f, scope)
-}
-
-// constraints states each flag group in words, one row each: Kong enforces at
-// most one member of an xor group (exactly one when its members are required)
-// and all or none of an and group. A required and group needs no row: every
-// member is marked required.
-func constraints(flags []*kong.Flag) []row {
+// constraints states each flag group in words, one row each. A required and
+// group needs no row: every member is marked required.
+func constraints(sc scope) []row {
 	var rows []row
-	seen := map[string]bool{}
-	for _, f := range flags {
-		for _, key := range f.Xor {
-			if seen["xor:"+key] {
-				continue
-			}
-			seen["xor:"+key] = true
-			members := groupMembers(flags, key)
-			if len(members) < 2 {
-				continue
-			}
-			quantity := "At most one of"
-			if groupRequired(flags, key) {
-				quantity = "Exactly one of"
-			}
-			rows = append(rows, row{label: quantity + " " + flagNames(members) + "."})
+	for _, g := range sc.groups {
+		if len(g.members) < 2 {
+			continue
 		}
-		for _, key := range f.And {
-			if seen["and:"+key] {
-				continue
-			}
-			seen["and:"+key] = true
-			var members []*kong.Flag
-			for _, m := range flags {
-				if slices.Contains(m.And, key) {
-					members = append(members, m)
-				}
-			}
-			if len(members) < 2 || andRequired(members[0], flags) {
-				continue
-			}
-			rows = append(rows, row{label: "All or none of " + flagNames(members) + "."})
+		var quantity string
+		switch {
+		case g.kind == xorGroup && g.hasRequiredMember():
+			quantity = "Exactly one of"
+		case g.kind == xorGroup:
+			quantity = "At most one of"
+		case !g.hasRequiredMember():
+			quantity = "All or none of"
+		default:
+			continue
 		}
+		rows = append(rows, row{label: quantity + " " + flagNames(g.members) + "."})
 	}
 	return rows
 }
@@ -402,14 +362,10 @@ func typeWord(t reflect.Type) string {
 }
 
 func positionalUsage(p *kong.Positional) string {
-	s := "<" + p.Name + ">"
-	if p.IsCumulative() {
-		s += " ..."
-	}
 	if !p.Required {
-		s = "[" + s + "]"
+		return "[" + positionalLabel(p) + "]"
 	}
-	return s
+	return positionalLabel(p)
 }
 
 func positionalLabel(p *kong.Positional) string {
@@ -420,10 +376,10 @@ func positionalLabel(p *kong.Positional) string {
 	return s
 }
 
-func flagHelp(f *kong.Flag, scope []*kong.Flag) string {
+func flagHelp(f *kong.Flag, sc scope) string {
 	var notes []string
 	// A required xor group says "Exactly one of" under Constraints instead.
-	if required(f, scope) && (len(f.Xor) == 0 || !groupRequired(scope, f.Xor[0])) {
+	if sc.required(f) && len(sc.requiredXors(f)) == 0 {
 		notes = append(notes, "required")
 	}
 	notes = append(notes, valueNotes(f.Value)...)
@@ -661,6 +617,19 @@ func wrap(text string, width int) []string {
 		out = append(out, cur)
 	}
 	return out
+}
+
+// printUsageError writes the error, the synopsis of the command it concerns
+// and where to read more, so a caller can correct argv without a second run.
+func printUsageError(w io.Writer, app *kong.Application, ctx *kong.Context, err error) {
+	node := selected(app, ctx)
+	msg, hint := usageMessage(err.Error(), node)
+	fmt.Fprintf(w, "%s: error: %s\n", app.Name, msg)
+	if hint != "" {
+		fmt.Fprintln(w, hint)
+	}
+	fmt.Fprintf(w, "Usage: %s\n", synopsis(app, node))
+	fmt.Fprintf(w, "Run %q for details.\n", commandLine(app, node)+" --help")
 }
 
 var (

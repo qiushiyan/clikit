@@ -5,13 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
-	"time"
-	"unicode/utf8"
 
 	"github.com/alecthomas/kong"
 	"github.com/qiushiyan/clikit"
@@ -61,7 +59,11 @@ type listCmd struct {
 	Limit int  `short:"n" help:"Show at most this many."`
 }
 
+// AfterApply reports a usage error the tags cannot express, from a hook.
 func (c *listCmd) AfterApply(j *journal) error {
+	if c.Limit < 0 {
+		return clikit.Usage(errors.New("--limit cannot be negative"))
+	}
 	j.add("list:AfterApply")
 	return nil
 }
@@ -114,7 +116,7 @@ func (c *settleCmd) Run(j *journal) error {
 }
 
 type failCmd struct {
-	How string `arg:"" enum:"exit,usage,error" help:"Which failure to return."`
+	How string `arg:"" enum:"exit,fail,usage,error" help:"Which failure to return."`
 }
 
 func (c *failCmd) Run(ctx *kong.Context) error {
@@ -122,6 +124,8 @@ func (c *failCmd) Run(ctx *kong.Context) error {
 	case "exit":
 		fmt.Fprintln(ctx.Stderr, "attention: 2 repositories behind")
 		return clikit.Exit(5)
+	case "fail":
+		return clikit.Fail(5, errors.New("2 repositories behind"))
 	case "usage":
 		return clikit.Usage(errors.New("<how> usage needs a second machine"))
 	}
@@ -137,10 +141,7 @@ func (echoCmd) Run(ctx *kong.Context, stdin io.Reader) error {
 
 type peerCmd struct{}
 
-func (c *peerCmd) Run(j *journal) error {
-	j.add("peer")
-	return nil
-}
+func (*peerCmd) Run() error { return nil }
 
 // newApp is the tool as main would define it: one value, with a fresh journal
 // so a test can see what ran. The provider takes the parsed root, so the
@@ -202,47 +203,74 @@ func TestHelpIgnoresBrokenEnvironment(t *testing.T) {
 	}
 }
 
+type envChoice struct {
+	Choice string `arg:"" optional:"" default:"a" enum:"a,b" env:"CLIKIT_TEST_FIRST,CLIKIT_TEST_SECOND" help:"Choice."`
+}
+
+func (*envChoice) Run() error { return nil }
+
+// A bad enum value from the environment is a failure, not a usage error, and
+// only the value Kong would use is judged.
 func TestEnumFromEnvironmentIsAFailure(t *testing.T) {
-	t.Setenv("CLIKIT_TEST_ROLE", "nope")
-	r, j := run("repo", "add", "/tmp")
-	want := `tool: error: $CLIKIT_TEST_ROLE="nope" is not a valid flag --role: must be one of tool, lib, notes` + "\n"
-	if r.Code != 1 || r.Stderr != want || len(j.ran) > 0 {
-		t.Fatalf("exit %d, ran %v, stderr %q", r.Code, j.ran, r.Stderr)
-	}
-	// argv wins over the variable
-	if r, j := run("repo", "add", "/tmp", "--role", "lib"); r.Code != 0 || strings.Join(j.ran, "|") != "repo add /tmp lib" {
-		t.Fatalf("argv over env: exit %d, ran %v, stderr %q", r.Code, j.ran, r.Stderr)
-	}
-	// and an invalid value in argv is still a usage error
-	if r, _ := run("repo", "add", "/tmp", "--role", "nope"); r.Code != 2 {
-		t.Fatalf("argv: exit %d", r.Code)
-	}
+	t.Run("variable", func(t *testing.T) {
+		t.Setenv("CLIKIT_TEST_ROLE", "nope")
+		r, j := run("repo", "add", "/tmp")
+		if r.Code != 1 || len(j.ran) > 0 || strings.Count(r.Stderr, "\n") != 1 {
+			t.Fatalf("exit %d, ran %v, stderr %q", r.Code, j.ran, r.Stderr)
+		}
+		for _, want := range []string{"$CLIKIT_TEST_ROLE", `"nope"`, "--role", "tool, lib, notes"} {
+			if !strings.Contains(r.Stderr, want) {
+				t.Errorf("stderr %q does not name %s", r.Stderr, want)
+			}
+		}
+	})
+	t.Run("flag in argv wins", func(t *testing.T) {
+		t.Setenv("CLIKIT_TEST_ROLE", "nope")
+		if r, j := run("repo", "add", "/tmp", "--role", "lib"); r.Code != 0 || strings.Join(j.ran, "|") != "repo add /tmp lib" {
+			t.Fatalf("exit %d, ran %v, stderr %q", r.Code, j.ran, r.Stderr)
+		}
+		// and a bad value in argv is still a usage error
+		if r, _ := run("repo", "add", "/tmp", "--role", "bad"); r.Code != 2 {
+			t.Fatalf("argv: exit %d", r.Code)
+		}
+	})
+	app := clikit.App{Name: "e", Description: "e takes a choice.", New: func() any { return &envChoice{} }}
+	t.Run("positional in argv wins", func(t *testing.T) {
+		t.Setenv("CLIKIT_TEST_FIRST", "bad")
+		if r := clikittest.Run(app, "b"); r.Code != 0 {
+			t.Fatalf("%+v", r)
+		}
+	})
+	t.Run("first variable set wins", func(t *testing.T) {
+		t.Setenv("CLIKIT_TEST_FIRST", "a")
+		t.Setenv("CLIKIT_TEST_SECOND", "bad")
+		if r := clikittest.Run(app); r.Code != 0 {
+			t.Fatalf("%+v", r)
+		}
+	})
 }
 
-func TestRunSelectsCommand(t *testing.T) {
-	r, j := run("repo", "add", "/tmp", "--role", "lib")
-	if r.Code != 0 || r.Stderr != "" || strings.Join(j.ran, "|") != "repo add /tmp lib" {
-		t.Fatalf("exit %d, ran %v, stderr %q", r.Code, j.ran, r.Stderr)
-	}
-	r, j = run("--home", "/srv", "list")
-	if r.Code != 0 || strings.Join(j.ran, "|") != "list:AfterApply|list /srv" || j.provided != 1 {
-		t.Fatalf("exit %d, ran %v, provided %d", r.Code, j.ran, j.provided)
-	}
-	r, j = run("peer")
-	if r.Code != 0 || strings.Join(j.ran, "|") != "peer" {
-		t.Fatalf("a hidden command still runs: exit %d, ran %v", r.Code, j.ran)
-	}
-}
-
-// One App value serves every invocation: nothing parsed into one run is seen
-// by the next.
+// One App value serves every invocation, in turn and at once: nothing parsed
+// into one run is seen by another, and Run leaves App.Options as it was.
 func TestAppIsReusable(t *testing.T) {
 	app, j := newApp()
+	app.Options = slices.Grow(app.Options, 8) // room an append in Run must not share
 	clikittest.Run(app, "--home", "/first", "list")
-	clikittest.Run(app, "--home", "/second", "list")
 	clikittest.Run(app, "list")
-	if got := strings.Join(j.ran, "|"); got != "list:AfterApply|list /first|list:AfterApply|list /second|list:AfterApply|list ~/.local/state/tool" {
+	if got := strings.Join(j.ran, "|"); got != "list:AfterApply|list /first|list:AfterApply|list ~/.local/state/tool" {
 		t.Fatalf("ran %s", got)
+	}
+
+	j.ran = nil
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() { clikittest.Run(app, "--home", fmt.Sprint("/", i), "list") })
+	}
+	wg.Wait()
+	for i := range 8 {
+		if !slices.Contains(j.ran, fmt.Sprint("list /", i)) {
+			t.Errorf("run %d did not see its own --home: ran %v", i, j.ran)
+		}
 	}
 }
 
@@ -254,29 +282,60 @@ func TestStdin(t *testing.T) {
 	}
 }
 
+// Invalid argv exits with the usage code after an error line naming what is
+// wrong, the synopsis its command's help opens with, and that help's command.
 func TestUsageErrors(t *testing.T) {
 	cases := []struct {
-		args          []string
-		message, line string
+		args    []string
+		command []string // the command the error concerns
+		names   []string // what the error line names
 	}{
-		{[]string{"lst"}, `tool: error: unexpected argument lst, did you mean "list"?`, "Usage: tool <command> [flags]"},
-		{[]string{"repo", "add"}, `tool: error: expected "<path>"`, "Usage: tool repo add <path> [flags]"},
-		{[]string{"repo", "add", "/tmp", "--role", "nope"}, `tool: error: --role must be one of "tool","lib","notes" but got "nope"`, "Usage: tool repo add <path> [flags]"},
-		{[]string{"list", "-n", "many"}, `tool: error: --limit: expected a valid 64 bit int but got "many"`, "Usage: tool list [flags]"},
-		{[]string{"settle", "x"}, "tool: error: missing flags: --keep=MACHINE or --delete", "Usage: tool settle (--keep=MACHINE | --delete) <target> [flags]"},
-		{[]string{"settle", "x", "--keep", "mini", "--delete"}, "tool: error: --keep and --delete can't be used together", "Usage: tool settle (--keep=MACHINE | --delete) <target> [flags]"},
-		{[]string{"fail", "usage"}, "tool: error: <how> usage needs a second machine", "Usage: tool fail <how> [flags]"},
+		{[]string{"lst"}, nil, []string{"lst"}},
+		{[]string{"repo", "add"}, []string{"repo", "add"}, []string{"<path>"}},
+		{[]string{"repo", "add", "/tmp", "--role", "nope"}, []string{"repo", "add"}, []string{"--role", "nope"}},
+		{[]string{"list", "-n", "many"}, []string{"list"}, []string{"--limit", "many"}},
+		{[]string{"settle", "x"}, []string{"settle"}, []string{"--keep=MACHINE", "--delete"}},
+		{[]string{"settle", "x", "--keep", "mini", "--delete"}, []string{"settle"}, []string{"--keep", "--delete"}},
+		{[]string{"fail", "usage"}, []string{"fail"}, []string{"<how> usage needs a second machine"}},
+		// Usage from a hook arrives inside Kong's parse error, which carries the command.
+		{[]string{"list", "--limit=-1"}, []string{"list"}, []string{"--limit cannot be negative"}},
 	}
 	for _, c := range cases {
 		r, j := run(c.args...)
 		if r.Code != 2 || r.Stdout != "" || len(j.ran) > 0 {
 			t.Errorf("%v: exit %d, ran %v, stdout %q", c.args, r.Code, j.ran, r.Stdout)
 		}
-		lines := strings.Split(strings.TrimSpace(r.Stderr), "\n")
-		if len(lines) != 3 || lines[0] != c.message || lines[1] != c.line || !strings.HasSuffix(lines[2], `--help" for details.`) {
+		lines := strings.Split(strings.TrimSuffix(r.Stderr, "\n"), "\n")
+		if len(lines) != 3 || !strings.HasPrefix(lines[0], "tool: error: ") {
 			t.Errorf("%v: stderr:\n%s", c.args, r.Stderr)
+			continue
+		}
+		for _, name := range c.names {
+			if !strings.Contains(lines[0], name) {
+				t.Errorf("%v: %q does not name %s", c.args, lines[0], name)
+			}
+		}
+		help, _ := run(append(slices.Clone(c.command), "--help")...)
+		if synopsis, _, _ := strings.Cut(help.Stdout, "\n"); lines[1] != synopsis {
+			t.Errorf("%v: %q is not the synopsis of its help, %q", c.args, lines[1], synopsis)
+		}
+		if want := strconv.Quote(strings.Join(append([]string{"tool"}, c.command...), " ") + " --help"); !strings.Contains(lines[2], want) {
+			t.Errorf("%v: %q does not point at %s", c.args, lines[2], want)
 		}
 	}
+}
+
+// exitCodesListed are the codes a help page's Exit codes section lists.
+func exitCodesListed(page string) []string {
+	_, section, _ := strings.Cut(page, "\nExit codes:\n")
+	section, _, _ = strings.Cut(section, "\n\n")
+	var codes []string
+	for line := range strings.Lines(section) {
+		if fields := strings.Fields(line); len(fields) > 0 {
+			codes = append(codes, fields[0])
+		}
+	}
+	return codes
 }
 
 func TestUsageCodeIsTheToolsOwn(t *testing.T) {
@@ -288,38 +347,58 @@ func TestUsageCodeIsTheToolsOwn(t *testing.T) {
 	if r := clikittest.Run(app, "fail", "error"); r.Code != 4 {
 		t.Errorf("failure: exit %d", r.Code)
 	}
-	help := clikittest.Run(app, "--help").Stdout
-	for _, want := range []string{"  3    invalid arguments; nothing was run", "  4    failed", "  5    done, but some repositories need attention"} {
-		if !strings.Contains(help, want) {
-			t.Errorf("exit codes miss %q:\n%s", want, help)
+	if got := exitCodesListed(clikittest.Run(app, "--help").Stdout); !slices.Equal(got, []string{"0", "3", "4", "5"}) {
+		t.Errorf("help lists exit codes %v", got)
+	}
+}
+
+// A command picks its outcome: Exit after reporting it itself, Fail for Run to
+// report, or any other error for the failure code. Usage is TestUsageErrors'.
+func TestCommandOutcomes(t *testing.T) {
+	for _, c := range []struct {
+		how    string
+		code   int
+		stderr string
+	}{
+		{"exit", 5, "attention: 2 repositories behind\n"},
+		{"fail", 5, "tool: error: 2 repositories behind\n"},
+		{"error", 1, "tool: error: boom\n"},
+	} {
+		if r, _ := run("fail", c.how); r.Code != c.code || r.Stderr != c.stderr || r.Stdout != "" {
+			t.Errorf("fail %s: exit %d, stdout %q, stderr %q", c.how, r.Code, r.Stdout, r.Stderr)
+		}
+	}
+	err := errors.New("x")
+	for _, c := range []struct {
+		name      string
+		got, want error
+	}{
+		{"Exit(0)", clikit.Exit(0), nil},
+		{"Usage(nil)", clikit.Usage(nil), nil},
+		{"Fail(5, nil)", clikit.Fail(5, nil), nil},
+		{"Fail(0, err)", clikit.Fail(0, err), err},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
 		}
 	}
 }
 
-func TestCommandOutcomes(t *testing.T) {
-	r, _ := run("fail", "exit")
-	if r.Code != 5 || r.Stderr != "attention: 2 repositories behind\n" {
-		t.Errorf("Exit passes the status through silently: exit %d, stderr %q", r.Code, r.Stderr)
-	}
-	r, _ = run("fail", "error")
-	if r.Code != 1 || r.Stderr != "tool: error: boom\n" {
-		t.Errorf("exit %d, stderr %q", r.Code, r.Stderr)
-	}
-	if clikit.Exit(0) != nil || clikit.Usage(nil) != nil {
-		t.Error("Exit(0) and Usage(nil) must be nil")
-	}
-}
+type failingWriter struct{ err error }
 
-type brokenWriter struct{}
+func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
 
-func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
-
+// A help page that cannot be written is a failure, whatever the writer's
+// error wraps.
 func TestHelpWriteFailure(t *testing.T) {
-	app, _ := newApp()
-	var stderr strings.Builder
-	app.Stdout, app.Stderr = brokenWriter{}, &stderr
-	if code := app.Run([]string{"--help"}); code != 1 || stderr.String() != "tool: error: writing help: broken pipe\n" {
-		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	for _, err := range []error{errors.New("broken pipe"), clikit.Usage(errors.New("broken pipe"))} {
+		app, _ := newApp()
+		var stderr strings.Builder
+		app.Stdout, app.Stderr = failingWriter{err}, &stderr
+		code := app.Run([]string{"--help"})
+		if got := stderr.String(); code != 1 || strings.Count(got, "\n") != 1 || !strings.Contains(got, "writing help") || !strings.Contains(got, "broken pipe") {
+			t.Errorf("writer error %T: exit %d, stderr %q", err, code, got)
+		}
 	}
 }
 
@@ -332,50 +411,57 @@ func (*quiet) Run(ctx *kong.Context) error {
 	return nil
 }
 
-// Options a tool passes cannot take help's ending, writers or printer away.
+// Options a tool passes cannot take help's ending, writers or printer away,
+// and a PostBuild of the tool's own already sees App's writers.
 func TestOptionsCannotUndoHelp(t *testing.T) {
-	var stolen strings.Builder
+	var stdout, stderr, stolen strings.Builder
+	var seen io.Writer
 	app := clikit.App{
 		Name: "q", Description: "q says something.", New: func() any { return &quiet{} },
+		Stdout: &stdout, Stderr: &stderr,
 		Options: []kong.Option{
 			kong.Writers(&stolen, &stolen),
 			kong.Exit(func(int) {}),
 			kong.Help(kong.DefaultHelpPrinter),
+			kong.PostBuild(func(k *kong.Kong) error {
+				seen = k.Stdout
+				return nil
+			}),
 			kong.PostBuild(func(k *kong.Kong) error {
 				k.Stdout, k.Exit = &stolen, func(int) {}
 				return nil
 			}),
 		},
 	}
-	r := clikittest.Run(app, "--help")
-	if r.Code != 0 || !strings.HasPrefix(r.Stdout, "Usage: q [flags]\n") || strings.Contains(r.Stdout, "RAN") || stolen.Len() != 0 {
-		t.Fatalf("exit %d, stdout %q, stolen %q", r.Code, r.Stdout, stolen.String())
+	code := app.Run([]string{"--help"})
+	if code != 0 || !strings.HasPrefix(stdout.String(), "Usage: q [flags]\n") || strings.Contains(stdout.String(), "RAN") || stolen.Len() != 0 {
+		t.Fatalf("exit %d, stdout %q, stderr %q, stolen %q", code, stdout.String(), stderr.String(), stolen.String())
+	}
+	if seen != io.Writer(&stdout) {
+		t.Errorf("a PostBuild saw %T, not App.Stdout", seen)
 	}
 
 	app.Options = []kong.Option{kong.NoDefaultHelp()}
-	r = clikittest.Run(app, "--go")
+	r := clikittest.Run(app, "--go")
 	if r.Code != 1 || !strings.Contains(r.Stderr, "kong.NoDefaultHelp removes --help") {
 		t.Fatalf("NoDefaultHelp: exit %d, stderr %q", r.Code, r.Stderr)
 	}
 }
 
-type chatty struct{}
+type panicky struct{}
 
-func (chatty) Run(ctx *kong.Context) error {
-	var wg sync.WaitGroup
-	for i := range 10 {
-		wg.Go(func() { fmt.Fprintf(ctx.Stdout, "line %d\n", i) })
-	}
-	wg.Wait()
-	return nil
-}
+func (*panicky) Run() error { panic("command panic") }
 
-func TestConcurrentOutput(t *testing.T) {
-	app := clikit.App{Name: "c", Description: "c writes from goroutines.", New: func() any { return &chatty{} }}
-	r := clikittest.Run(app)
-	if r.Code != 0 || strings.Count(r.Stdout, "\n") != 10 {
-		t.Fatalf("%+v", r)
-	}
+// Run recovers only its own exit signal: a command's panic is a bug, and it
+// reaches the caller.
+func TestCommandPanicEscapes(t *testing.T) {
+	defer func() {
+		if r := recover(); r != "command panic" {
+			t.Fatalf("recovered %v", r)
+		}
+	}()
+	clikittest.Run(clikit.App{Name: "p", Description: "p panics.", New: func() any { return &panicky{} }})
+	t.Fatal("Run returned")
 }
 
 type fileCheck struct{}
@@ -399,269 +485,6 @@ func TestStdoutKeepsItsIdentity(t *testing.T) {
 	app := clikit.App{Name: "f", Description: "f checks its stdout.", New: func() any { return &fileCheck{} }, Stdout: devnull, Stderr: &stderr}
 	if code := app.Run(nil); code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
-	}
-}
-
-type badDeclarations struct {
-	Name string `help:""`
-	Add  struct {
-		Path string `arg:""`
-	} `cmd:""`
-	Mode     string `enum:"a,b" default:"c" help:"Mode."`
-	Keep     bool   `xor:"how" required:"" help:"Keep."`
-	Delete   bool   `xor:"how" help:"Delete."`
-	Internal string `hidden:""`
-}
-
-type branching struct {
-	File struct {
-		File string  `arg:"" help:"File name."`
-		Cat  peerCmd `cmd:"" help:"Read it."`
-	} `arg:"" help:"File operations."`
-}
-
-func TestBadDeclarationsFail(t *testing.T) {
-	app := clikit.App{Name: "tool", New: func() any { return &badDeclarations{} }}
-	r := clikittest.Run(app, "--help")
-	for _, want := range []string{
-		"App.Description is empty",
-		"flag --name has no help",
-		"command add has no help",
-		"argument <path> of add has no help",
-		`flag --mode defaults to "c", which is not one of its values`,
-		`xor group "how" marks only some of --keep, --delete required`,
-	} {
-		if !strings.Contains(r.Stderr, want) {
-			t.Errorf("missing %q in %q", want, r.Stderr)
-		}
-	}
-	if r.Code != 1 || r.Stdout != "" || strings.Contains(r.Stderr, "internal") {
-		t.Errorf("exit %d, stdout %q, stderr %q", r.Code, r.Stdout, r.Stderr)
-	}
-
-	app = clikit.App{Name: "tool", Description: "tool reads files.", New: func() any { return &branching{} }}
-	if r := clikittest.Run(app, "--help"); r.Code != 1 || !strings.Contains(r.Stderr, "branching argument <file> is not supported") {
-		t.Errorf("branching: exit %d, stderr %q", r.Code, r.Stderr)
-	}
-}
-
-type tagV1 struct {
-	Name string `help:"Label to show." default:"main"`
-}
-
-type tagV2 struct {
-	Label string `help:"Label to show." default:"primary"`
-}
-
-func (*tagV1) Run() error { return nil }
-func (*tagV2) Run() error { return nil }
-
-// A renamed flag and a changed default reach help with no other edit, and the
-// old spelling stops parsing.
-func TestRenameReachesHelp(t *testing.T) {
-	app := clikit.App{Name: "tag", Description: "tag prints a label.", New: func() any { return &tagV1{} }}
-	before := clikittest.Run(app, "--help").Stdout
-	app.New = func() any { return &tagV2{} }
-	after := clikittest.Run(app, "--help").Stdout
-	if !strings.Contains(before, "--name=NAME") || !strings.Contains(before, "default: main") {
-		t.Fatalf("before:\n%s", before)
-	}
-	if strings.Contains(after, "--name") || !strings.Contains(after, "--label=LABEL") || !strings.Contains(after, "default: primary") {
-		t.Fatalf("after:\n%s", after)
-	}
-	if r := clikittest.Run(app, "--name", "x"); r.Code != 2 {
-		t.Fatalf("old spelling: exit %d, stderr %q", r.Code, r.Stderr)
-	}
-}
-
-func TestHelpPagesGolden(t *testing.T) {
-	app, _ := newApp()
-	clikittest.Golden(t, app, "testdata/registry")
-}
-
-type single struct {
-	Path  string `arg:"" optional:"" help:"File to open; the repository root when omitted."`
-	Print bool   `short:"p" help:"Print the URL instead of opening it."`
-}
-
-func (single) HelpSections() []clikit.Section {
-	return []clikit.Section{{Title: "Examples", Body: "open README.md:10\nopen -p"}}
-}
-
-func (single) Run() error { return nil }
-
-func TestSingleCommandTool(t *testing.T) {
-	clikittest.Golden(t, clikit.App{
-		Name:        "open",
-		Description: "open shows the checkout on GitHub.",
-		New:         func() any { return &single{} },
-		ExitCodes:   map[int]string{0: "opened, or printed with --print"},
-	}, "testdata/single")
-}
-
-// The rest of Kong's grammar that help has to state: a default command's own
-// invocation, passthrough, typed placeholders, required and-groups, and
-// required flags in the command list.
-type grammar struct {
-	Show  showCmd  `cmd:"" default:"withargs" help:"Show the brief a fragment names."`
-	Exec  execCmd  `cmd:"" help:"Run a program with the tool's environment."`
-	Wait  waitCmd  `cmd:"" help:"Wait for a job."`
-	Login loginCmd `cmd:"" help:"Store credentials."`
-}
-
-type showCmd struct {
-	Fragment string `arg:"" optional:"" help:"Part of a brief's name; the index when omitted."`
-	Full     bool   `help:"Print the whole brief."`
-}
-
-type execCmd struct {
-	Verbose bool     `short:"v" help:"Say what runs."`
-	Args    []string `arg:"" passthrough:"" help:"Program and its arguments."`
-}
-
-type waitCmd struct {
-	Job     string        `arg:"" help:"Job to wait for."`
-	Timeout time.Duration `help:"Give up after this long." default:"30s"`
-	Every   float64       `help:"Seconds between checks." default:"0.5"`
-	Count   []int         `help:"Exit codes that count as done."`
-}
-
-type loginCmd struct {
-	User     string `required:"" and:"cred" help:"Account name."`
-	Password string `and:"cred" help:"Account password."`
-}
-
-func (c *showCmd) Run(j *journal) error {
-	j.add("show " + c.Fragment + fmt.Sprint(c.Full))
-	return nil
-}
-
-func (c *execCmd) Run(j *journal) error {
-	j.add("exec " + strings.Join(c.Args, " "))
-	return nil
-}
-
-func (*waitCmd) Run() error  { return nil }
-func (*loginCmd) Run() error { return nil }
-
-func TestGrammarHelp(t *testing.T) {
-	j := &journal{}
-	app := clikit.App{
-		Name: "brief", Description: "brief indexes handoff briefs.",
-		New:     func() any { return &grammar{} },
-		Options: []kong.Option{kong.Bind(j)},
-	}
-	clikittest.Golden(t, app, "testdata/grammar")
-
-	if r := clikittest.Run(app, "--full", "drift"); r.Code != 0 || strings.Join(j.ran, "|") != "show drifttrue" {
-		t.Fatalf("default command: %+v, ran %v", r, j.ran)
-	}
-	j.ran = nil
-	if r := clikittest.Run(app, "exec", "-v", "ls", "-la", "--", "x"); r.Code != 0 || strings.Join(j.ran, "|") != "exec ls -la -- x" {
-		t.Fatalf("passthrough keeps flags and --: %+v, ran %v", r, j.ran)
-	}
-	if r := clikittest.Run(app, "login", "--user", "me"); r.Code != 2 || !strings.Contains(r.Stderr, "Usage: brief login --user=USER --password=PASSWORD\n") {
-		t.Fatalf("a required and-group needs every member, and says so: %+v", r)
-	}
-}
-
-type noteCLI struct {
-	Note   noteCmd   `cmd:"" help:"Append a note."`
-	Pickup pickupCmd `cmd:"" help:"Pick up a brief."`
-	Wait   waitNCmd  `cmd:"" help:"Wait for some jobs."`
-	Ask    askCmd    `cmd:"" help:"Resolve a fragment to one brief."`
-}
-
-type noteCmd struct {
-	Text []string `arg:"" help:"Words of the note."`
-}
-
-type pickupCmd struct {
-	Mode string `required:"" enum:"build,design" help:"How the first turn runs."`
-}
-
-type waitNCmd struct {
-	Count int `arg:"" optional:"" help:"How many jobs to wait for."`
-}
-
-type askCmd struct {
-	Fragment string `arg:"" help:"Part of a brief's name."`
-}
-
-type seam interface{ Now() string }
-
-type realClock struct{}
-
-func (realClock) Now() string { return "real" }
-
-type fakeClock struct{}
-
-func (fakeClock) Now() string { return "fake" }
-
-func (c *noteCmd) Run(ctx *kong.Context, clock seam) error {
-	fmt.Fprintln(ctx.Stdout, clock.Now(), strings.Join(c.Text, " "))
-	return nil
-}
-func (*pickupCmd) Run() error { return nil }
-func (*waitNCmd) Run() error  { return nil }
-
-func (c *askCmd) Run(ctx *kong.Context) error {
-	return clikit.Fail(5, fmt.Errorf("%s names two briefs", c.Fragment))
-}
-
-func noteApp() clikit.App {
-	return clikit.App{
-		Name: "jot", Description: "jot keeps notes.",
-		New:       func() any { return &noteCLI{} },
-		Options:   []kong.Option{kong.BindTo(realClock{}, (*seam)(nil))},
-		ExitCodes: map[int]string{5: "the fragment names more than one brief"},
-	}
-}
-
-// Kong's messages are restated where they mislead, and the flag in an error
-// is named exactly as the usage line names it.
-func TestUsageMessages(t *testing.T) {
-	cases := []struct {
-		args []string
-		want []string
-	}{
-		{[]string{"pickup"}, []string{"jot: error: missing flags: --mode=MODE", "Usage: jot pickup --mode=MODE"}},
-		{[]string{"pickup", "--mode"}, []string{"jot: error: --mode: missing value"}},
-		{[]string{"wait", "many"}, []string{`jot: error: <count>: expected a valid 64 bit int but got "many"`}},
-		{[]string{"note", "use", "-n", "now"}, []string{"jot: error: unknown flag -n", `Text that starts with "-" goes after --, which ends the flags.`, "Usage: jot note <text> ..."}},
-	}
-	for _, c := range cases {
-		r := clikittest.Run(noteApp(), c.args...)
-		if r.Code != 2 {
-			t.Errorf("%v: exit %d", c.args, r.Code)
-		}
-		for _, w := range c.want {
-			if !strings.Contains(r.Stderr, w+"\n") {
-				t.Errorf("%v: missing line %q in:\n%s", c.args, w, r.Stderr)
-			}
-		}
-		if strings.Contains(r.Stderr, `did you mean "-h"`) {
-			t.Errorf("%v: offers help for a mistyped flag:\n%s", c.args, r.Stderr)
-		}
-	}
-	if r := clikittest.Run(noteApp(), "note", "--", "-n", "now"); r.Code != 0 || r.Stdout != "real -n now\n" {
-		t.Errorf("text after --: %+v", r)
-	}
-}
-
-func TestFail(t *testing.T) {
-	r := clikittest.Run(noteApp(), "ask", "drift")
-	if r.Code != 5 || r.Stderr != "jot: error: drift names two briefs\n" || r.Stdout != "" {
-		t.Fatalf("%+v", r)
-	}
-	if clikit.Fail(5, nil) != nil {
-		t.Error("Fail(code, nil) must be nil")
-	}
-	if err := errors.New("x"); clikit.Fail(0, err) != err {
-		t.Error("Fail(0, err) must be err")
-	}
-	if help := clikittest.Run(noteApp(), "--help").Stdout; !strings.Contains(help, "  5    the fragment names more than one brief\n") {
-		t.Errorf("exit codes:\n%s", help)
 	}
 }
 
@@ -699,126 +522,14 @@ func TestOwnHelpCommandWins(t *testing.T) {
 	}
 }
 
-func TestEqualUsageAndFailureCodes(t *testing.T) {
-	app := noteApp()
-	app.UsageCode, app.FailureCode = 1, 1
-	help := clikittest.Run(app, "--help").Stdout
-	if !strings.Contains(help, "  1    failed, or invalid arguments (then nothing was run)\n") {
-		t.Fatalf("exit codes:\n%s", help)
-	}
-}
-
 // A test replaces a binding by appending an option of the same type to a copy
 // of App.Options: Kong keeps one binding per type, and the later one wins.
 func TestLaterBindingReplacesEarlier(t *testing.T) {
-	app := noteApp()
-	app.Options = append(slices.Clone(app.Options), kong.BindTo(fakeClock{}, (*seam)(nil)))
-	if r := clikittest.Run(app, "note", "hi"); r.Stdout != "fake hi\n" {
-		t.Fatalf("%+v", r)
-	}
-	if r := clikittest.Run(noteApp(), "note", "hi"); r.Stdout != "real hi\n" {
-		t.Fatalf("the original App changed: %+v", r)
-	}
-}
-
-// Generated rows wrap at a fixed width; authored text is left as written. The
-// golden files are every page the tests above render.
-func TestRowsWrap(t *testing.T) {
-	files, _ := filepath.Glob("testdata/*/help*.txt")
-	if len(files) == 0 {
-		t.Fatal("no golden pages under testdata")
-	}
-	for _, file := range files {
-		page, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for line := range strings.SplitSeq(string(page), "\n") {
-			if utf8.RuneCountInString(line) > 100 {
-				t.Errorf("%s: line over 100 columns: %q", file, line)
-			}
-		}
-	}
-}
-
-// A flag group Kong checks differently from its tags is rejected, naming the
-// flag; groupProblems states Kong's rules.
-type spanningGroup struct {
-	Local bool          `xor:"where" required:"" help:"Use the local copy."`
-	Fetch spanningFetch `cmd:"" help:"Fetch a copy."`
-}
-
-type spanningFetch struct {
-	Remote bool `xor:"where" required:"" help:"Use the remote copy."`
-}
-
-type tangledGroups struct {
-	Solo   string `required:"" and:"solo" help:"Solo."`
-	Keep   string `xor:"how" required:"" and:"note" help:"Keep."`
-	Delete bool   `xor:"how" required:"" help:"Delete."`
-	Note   string `and:"note" help:"Note."`
-	X      string `required:"" and:"a" help:"X."`
-	Y      string `and:"a,b" help:"Y."`
-	Z      string `and:"b" help:"Z."`
-}
-
-// Groups Kong checks as declared: optional groups that overlap, a required
-// flag in two and groups, and a flag an and group requires inside an optional
-// xor group.
-type statedGroups struct {
-	User     string `xor:"auth" and:"cred" help:"Account name."`
-	Password string `and:"cred" help:"Account password."`
-	Token    string `xor:"auth" help:"API token."`
-	Host     string `required:"" and:"site,port" help:"Host."`
-	Path     string `and:"site" help:"Path."`
-	Port     int    `and:"port" help:"Port."`
-	Mirror   string `xor:"source" and:"mirror" help:"Mirror to copy."`
-	Local    string `xor:"source" help:"Local directory."`
-	Into     string `required:"" and:"mirror" help:"Destination."`
-}
-
-func (*statedGroups) Run() error { return nil }
-
-func TestFlagGroups(t *testing.T) {
-	app := clikit.App{Name: "g", Description: "g groups flags.", New: func() any { return &spanningGroup{} }}
-	r := clikittest.Run(app, "--help")
-	if want := `xor group "where" spans --local, --remote of fetch`; r.Code != 1 || !strings.Contains(r.Stderr, want) || strings.Contains(r.Stderr, "has only") {
-		t.Errorf("spanning: exit %d, stderr %q", r.Code, r.Stderr)
-	}
-
-	app.New = func() any { return &tangledGroups{} }
-	r = clikittest.Run(app, "--help")
-	for _, want := range []string{
-		`required and group "solo" has only --solo`,
-		`flag --keep is in required xor group "how" and in and group "note"`,
-		`flag --y is in required and group "a" and in and group "b" without being required itself`,
-	} {
-		if !strings.Contains(r.Stderr, want) {
-			t.Errorf("missing %q in %q", want, r.Stderr)
-		}
-	}
-	if r.Code != 1 {
-		t.Errorf("tangled: exit %d", r.Code)
-	}
-
-	app.New = func() any { return &statedGroups{} }
-	help := clikittest.Run(app, "--help")
-	for _, want := range []string{
-		"At most one of --user, --token.",
-		"All or none of --user, --password.",
-		"At most one of --mirror, --local.",
-		"Path (required).",
-		"Port (required).",
-		"Mirror to copy (required).",
-	} {
-		if !strings.Contains(help.Stdout, want) {
-			t.Errorf("stated: missing %q in:\n%s%s", want, help.Stdout, help.Stderr)
-		}
-	}
-	if r := clikittest.Run(app, "--host=h", "--path=p", "--mirror=m", "--into=d"); r.Code != 2 || !strings.Contains(r.Stderr, "--port") {
-		t.Errorf("Kong requires --port as help says: %+v", r)
-	}
-	if r := clikittest.Run(app, "--host=h", "--path=p", "--port=1", "--mirror=m", "--into=d"); r.Code != 0 {
-		t.Errorf("every required flag given: %+v", r)
+	app, j := newApp()
+	app.Options = append(slices.Clone(app.Options), kong.BindToProvider(func() (*deps, error) {
+		return &deps{home: "fake"}, nil
+	}))
+	if r := clikittest.Run(app, "list"); r.Code != 0 || !slices.Contains(j.ran, "list fake") {
+		t.Fatalf("exit %d, ran %v, stderr %q", r.Code, j.ran, r.Stderr)
 	}
 }

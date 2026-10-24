@@ -12,8 +12,9 @@ change must keep are in `CLAUDE.md`.
 `App.Run` builds a fresh grammar from `New`, then the Kong parser with the
 tool's options first and clikit's own last: name, description, stdin bound as
 an `io.Reader`, the environment-enum check, and `own` (writers, exit hook,
-help printer), applied both as an option and again after every `PostBuild`,
-and `settlePlaceholders`, which writes each flag's value name into the model.
+help printer), applied after every option so a tool's own `PostBuild` sees the
+App's writers, and again as the last `PostBuild` so none can undo it, and
+`settlePlaceholders`, which writes each flag's value name into the model.
 `checkDeclaration` then rejects any grammar help would describe wrongly, before
 a single argument is read. A leading `help` becomes a trailing `--help` unless
 the tool declares a `help` command itself.
@@ -85,10 +86,11 @@ each step sits in it:
   `check.go` states Kong's rule beside each rejection. Rendering any of these
   approximately would reintroduce the disagreement clikit exists to prevent,
   and modelling Kong's group checks in the renderer would tie help to Kong's
-  quirks rather than to the declaration. The renderer leans on the
-  rejections: `andRequired` reads and groups one step deep, which is exact
-  only for the group shapes that build, so relaxing a group rejection means
-  teaching the renderer that shape first.
+  quirks rather than to the declaration. Flag groups have one model,
+  `groups.go`, which the renderer and `groupProblems` both read, and the
+  renderer leans on the rejections: it finds the flags a required and group
+  demands one step deep, which is exact only for the group shapes that build,
+  so relaxing a group rejection means teaching the renderer that shape first.
 - **Help ends the run by panicking with `exitSignal`.** Kong's help hook calls
   its exit function and then returns; an exit function that only records the
   status lets parsing continue, so the command would run after its own help.
@@ -101,7 +103,9 @@ each step sits in it:
 - **Writers pass through unwrapped.** Recording write errors by wrapping stdout
   races when a command writes from several goroutines and hides an `*os.File`
   from terminal detection. The help printer reports its own write failure
-  instead, and `clikittest` brings the locked buffer tests need.
+  instead, as an error that wraps nothing, so a writer's error cannot turn it
+  into a usage error or a status; `clikittest` brings the locked buffer tests
+  need.
 
 ## Deliberately not built
 

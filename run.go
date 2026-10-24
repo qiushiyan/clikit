@@ -86,19 +86,18 @@ func (a App) Run(args []string) (code int) {
 		return a.FailureCode
 	}
 
-	stdin := a.Stdin
-	exit := func(code int) { panic(exitSignal(code)) }
-	// clikit's settings go last, and again after every PostBuild option, so no
-	// option can stop help from ending the run or send it elsewhere.
+	// clikit's settings go after every option, so a PostBuild sees App's
+	// writers, and again as the last PostBuild, so no option can stop help
+	// from ending the run or send it elsewhere.
 	own := func(k *kong.Kong) error {
-		k.Exit = exit
+		k.Exit = func(code int) { panic(exitSignal(code)) }
 		k.Stdout, k.Stderr = a.Stdout, a.Stderr
 		return kong.Help(printHelp(a)).Apply(k)
 	}
 	opts := append(slices.Clone(a.Options),
 		kong.Name(a.Name),
 		kong.Description(a.Description),
-		kong.BindTo(stdin, (*io.Reader)(nil)),
+		kong.BindTo(a.Stdin, (*io.Reader)(nil)),
 		kong.WithBeforeApply(checkEnvEnums),
 		kong.OptionFunc(own),
 		kong.PostBuild(own),
@@ -152,11 +151,9 @@ func (a App) outcome(app *kong.Application, ctx *kong.Context, err error) int {
 		}
 		return s.code
 	}
-	if hw, ok := errors.AsType[*helpWriteError](err); ok {
-		fmt.Fprintf(a.Stderr, "%s: error: writing help: %v\n", a.Name, hw.err)
-		return a.FailureCode
-	}
 	if pe, ok := errors.AsType[*kong.ParseError](err); ok {
+		// A failed parse returns no context; its error carries one, which a
+		// Usage error returned from a hook needs to name its command.
 		ctx = pe.Context
 		if pe.ExitCode() == kongUsageExit {
 			printUsageError(a.Stderr, app, ctx, pe.Unwrap())
@@ -169,22 +166,6 @@ func (a App) outcome(app *kong.Application, ctx *kong.Context, err error) int {
 	}
 	fmt.Fprintf(a.Stderr, "%s: error: %v\n", a.Name, err)
 	return a.FailureCode
-}
-
-// printUsageError writes the error, the synopsis of the command it concerns
-// and where to read more, so a caller can correct argv without a second run.
-func printUsageError(w io.Writer, app *kong.Application, ctx *kong.Context, err error) {
-	node := app.Node
-	if ctx != nil && ctx.Selected() != nil {
-		node = ctx.Selected()
-	}
-	msg, hint := usageMessage(err.Error(), node)
-	fmt.Fprintf(w, "%s: error: %s\n", app.Name, msg)
-	if hint != "" {
-		fmt.Fprintln(w, hint)
-	}
-	fmt.Fprintf(w, "Usage: %s\n", synopsis(app, node))
-	fmt.Fprintf(w, "Run %q for details.\n", commandLine(app, node)+" --help")
 }
 
 // Exit makes a command end with status code without printing anything more:
@@ -240,13 +221,6 @@ type usageError struct{ err error }
 
 func (e *usageError) Error() string { return e.err.Error() }
 func (e *usageError) Unwrap() error { return e.err }
-
-// helpWriteError is a failure to write the help page, reported as a failure
-// rather than as the usage error Kong would wrap it in.
-type helpWriteError struct{ err error }
-
-func (e *helpWriteError) Error() string { return "writing help: " + e.err.Error() }
-func (e *helpWriteError) Unwrap() error { return e.err }
 
 func hasChild(n *kong.Node, name string) bool {
 	return slices.ContainsFunc(n.Children, func(c *kong.Node) bool {
