@@ -32,6 +32,16 @@ func checkDeclaration(k *kong.Kong) error {
 		if n.Type == kong.CommandNode && !n.Hidden && strings.TrimSpace(n.Help) == "" {
 			problems = append(problems, "command "+strings.Join(pathBelow(n, nil), " ")+" has no help")
 		}
+		// Kong reads a word that starts with "-" as a flag, or as the end of
+		// flags, before it looks for a command; a lone "-" is a word.
+		// unmatchedWord (help.go) also counts on no command being called "--".
+		if n.Type == kong.CommandNode && !n.Hidden {
+			for _, name := range append([]string{n.Name}, n.Aliases...) {
+				if len(name) > 1 && strings.HasPrefix(name, "-") {
+					problems = append(problems, fmt.Sprintf("command %s is called %q, which argv reads as a flag or as the end of flags, so no caller can type it where help lists it: give it a name without a leading dash", strings.Join(pathBelow(n, nil), " "), name))
+				}
+			}
+		}
 		// A withargs default's arguments and flags parse at its parent's level,
 		// so the parent's page lists them under the command's name, and an
 		// error in them points to the command's own page: hidden, help would

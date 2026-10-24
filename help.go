@@ -643,8 +643,11 @@ func wrap(text string, width int) []string {
 // printUsageError writes the error, the synopsis of the command it concerns
 // and where to read more, so a caller can correct argv without a second run.
 func printUsageError(w io.Writer, app *kong.Application, ctx *kong.Context, err error) {
-	node := selected(app, ctx)
-	msg, hint := usageMessage(err.Error(), node)
+	node, msg := selected(app, ctx), err.Error()
+	if parent, word, ok := unmatchedWord(ctx, err); ok {
+		node, msg = parent, msg+suggestion(word, parent)
+	}
+	msg, hint := usageMessage(msg, node)
 	fmt.Fprintf(w, "%s: error: %s\n", app.Name, msg)
 	if hint != "" {
 		fmt.Fprintln(w, hint)
@@ -677,4 +680,74 @@ func usageMessage(msg string, n *kong.Node) (string, string) {
 		hint = `Text that starts with "-" goes after --, which ends the flags.`
 	}
 	return msg, hint
+}
+
+// unmatchedWord reports a word no command of parent matched, which Kong
+// handed to parent's withargs default and that default, taking no
+// positional, rejected as "unexpected argument". The error concerns parent,
+// as it would if parent had no default. Kong records a default it selects for
+// a word without consuming the word, and consumes a typed command name first,
+// so the default was handed the word when the token before its remainder is
+// not its name: between two path entries Kong consumes nothing else but "--",
+// which checkDeclaration rejects as a command name. err must be the trace's
+// own error, worded as Kong words it today, so a Kong release that changes
+// either fails TestWordNoCommandMatches instead of being restated.
+func unmatchedWord(ctx *kong.Context, err error) (*kong.Node, string, bool) {
+	if ctx == nil || err != ctx.Error || len(ctx.Path) < 2 {
+		return nil, "", false
+	}
+	last, prev := ctx.Path[len(ctx.Path)-1], ctx.Path[len(ctx.Path)-2]
+	d := last.Command
+	if d == nil || d.Parent == nil || defaultWithArgs(d.Parent) != d || len(d.Positional) > 0 {
+		return nil, "", false
+	}
+	rem, before := last.Remainder(), prev.Remainder()
+	if len(rem) == 0 || err.Error() != "unexpected argument "+rem[0] {
+		return nil, "", false
+	}
+	if i := len(before) - len(rem) - 1; i >= 0 && (before[i] == d.Name || slices.Contains(d.Aliases, before[i])) {
+		return nil, "", false
+	}
+	return d.Parent, rem[0], true
+}
+
+// suggestion is what Kong adds to "unexpected argument" where no default
+// takes the word: the visible commands of n it is a prefix of or within two
+// edits of. Kong's matcher is unexported; TestWordNoCommandMatches holds the
+// two to the same words.
+func suggestion(word string, n *kong.Node) string {
+	var near []string
+	for _, c := range n.Children {
+		if c.Type == kong.CommandNode && !c.Hidden && (strings.HasPrefix(c.Name, word) || editDistance(c.Name, word) <= 2) {
+			near = append(near, strconv.Quote(c.Name))
+		}
+	}
+	switch len(near) {
+	case 0:
+		return ""
+	case 1:
+		return ", did you mean " + near[0] + "?"
+	}
+	return ", did you mean one of " + strings.Join(near, ", ") + "?"
+}
+
+// editDistance is the Levenshtein distance between a and b, counted in runes.
+func editDistance(a, b string) int {
+	rb := []rune(b)
+	row := make([]int, len(rb)+1) // distances from a's prefix so far to each prefix of b
+	for j := range row {
+		row[j] = j
+	}
+	for i, ca := range []rune(a) {
+		diag := row[0]
+		row[0] = i + 1
+		for j, cb := range rb {
+			cost := 1
+			if ca == cb {
+				cost = 0
+			}
+			diag, row[j+1] = row[j+1], min(row[j+1]+1, row[j]+1, diag+cost)
+		}
+	}
+	return row[len(rb)]
 }

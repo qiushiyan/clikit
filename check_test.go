@@ -54,6 +54,14 @@ type branchingDefault struct {
 	Sync peerCmd `cmd:"" help:"Sync them."`
 }
 
+// Kong reads "--" and "-x" as flags before it looks for a command; a lone
+// "-" is a word.
+type dashedCommands struct {
+	Board boardCmd `cmd:"" default:"withargs" aliases:"--" help:"The account board."`
+	Skip  peerCmd  `cmd:"" name:"-x" help:"Named like a flag."`
+	Stdin peerCmd  `cmd:"" name:"-" help:"Read stdin."`
+}
+
 type tangledGroups struct {
 	Solo   string `required:"" and:"solo" help:"Solo."`
 	Keep   string `xor:"how" required:"" and:"note" help:"Keep."`
@@ -93,6 +101,10 @@ func TestDeclarationRejections(t *testing.T) {
 		{"default command with commands", clikit.App{Name: "tool", Description: "tool keeps repositories.", New: func() any { return &branchingDefault{} }}, []string{
 			"default command repo has commands of its own",
 		}, nil},
+		{"commands named like flags", clikit.App{Name: "tool", Description: "tool shows accounts.", New: func() any { return &dashedCommands{} }}, []string{
+			`command board is called "--", which argv reads as a flag`,
+			`command -x is called "-x", which argv reads as a flag`,
+		}, []string{`command - is called`}},
 		{"groups Kong checks differently", clikit.App{Name: "g", Description: "g groups flags.", New: func() any { return &tangledGroups{} }}, []string{
 			`required and group "solo" has only --solo`,
 			`flag --keep is in required xor group "how" and in and group "note"`,

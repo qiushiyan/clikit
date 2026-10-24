@@ -1,7 +1,9 @@
 package clikit_test
 
 import (
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -271,5 +273,89 @@ func TestUsageMessages(t *testing.T) {
 	}
 	if r := clikittest.Run(jot, "note", "--", "-n", "now"); r.Code != 0 || r.Stdout != "-n now\n" {
 		t.Errorf("text after --: %+v", r)
+	}
+}
+
+// boardPlain is boardCLI without its defaults: Kong's own report of a word
+// that names no command, which clikit gives the same way where a default
+// that takes no argument was handed the word.
+type boardPlain struct {
+	Board    boardCmd         `cmd:"" aliases:"b" help:"The account board."`
+	Launch   launchCmd        `cmd:"" help:"Launch a session."`
+	Latch    launchCmd        `cmd:"" help:"Hold a session's account."`
+	Lurch    launchCmd        `cmd:"" hidden:"" help:"Internal: launch anywhere."`
+	Cafe     launchCmd        `cmd:"" name:"café" help:"Take a break."`
+	Accounts plainAccountsCmd `cmd:"" help:"Manage accounts."`
+}
+
+type plainAccountsCmd struct {
+	Board  accountsBoardCmd `cmd:"" help:"The board of accounts alone."`
+	Remove removeCmd        `cmd:"" help:"Forget an account."`
+}
+
+// A word no command matches, which Kong hands to a default that takes no
+// argument, is reported as Kong reports it at a level without a default: the
+// same line, under the parent's synopsis. Named, the default keeps its own.
+func TestWordNoCommandMatches(t *testing.T) {
+	// The trace this rests on: Kong selects the default for the word and the
+	// default rejects it in these words.
+	k, err := kong.New(&boardCLI{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = k.Parse([]string{"lauch"})
+	if pe, ok := errors.AsType[*kong.ParseError](err); !ok || pe.Unwrap() != pe.Context.Error || pe.Error() != "unexpected argument lauch" || pe.Context.Selected().Name != "board" {
+		t.Fatalf("Kong's trace of a word no command matches: %v", err)
+	}
+
+	app, _ := newBoardApp()
+	plain := clikit.App{Name: "tool", Description: "tool shows accounts and launches sessions.", New: func() any { return &boardPlain{} }}
+	for _, c := range []struct {
+		args    []string
+		command []string // the command the error concerns
+		word    string
+	}{
+		{[]string{"lauch"}, nil, "lauch"}, // two commands near, one hidden left out
+		{[]string{"zzz"}, nil, "zzz"},     // none
+		{[]string{"boar"}, nil, "boar"},   // a prefix
+		{[]string{"lurc"}, nil, "lurc"},   // a prefix of a hidden command only
+		{[]string{"cabx"}, nil, "cabx"},   // two runes from café, three bytes
+		{[]string{"--compact", "lauch"}, nil, "lauch"},
+		{[]string{"lauch", "--compact"}, nil, "lauch"},
+		{[]string{"--", "lauch"}, nil, "lauch"},
+		{[]string{"help", "lauch"}, nil, "lauch"},
+		{[]string{"accounts", "remov"}, []string{"accounts"}, "remov"},
+		{[]string{"--compact", "accounts", "remov"}, []string{"accounts"}, "remov"},
+	} {
+		r := clikittest.Run(app, c.args...)
+		want := clikittest.Run(plain, append(slices.Clone(c.command), c.word)...)
+		got, wantLine := strings.Split(r.Stderr, "\n"), strings.Split(want.Stderr, "\n")[0]
+		if r.Code != 2 || len(got) != 4 || got[0] != wantLine || !strings.HasPrefix(wantLine, "tool: error: unexpected argument "+c.word) {
+			t.Errorf("%v: exit %d, stderr:\n%s\nwant first line %q", c.args, r.Code, r.Stderr, wantLine)
+			continue
+		}
+		help := clikittest.Run(app, append(slices.Clone(c.command), "--help")...)
+		if synopsis, _, _ := strings.Cut(help.Stdout, "\n"); got[1] != synopsis {
+			t.Errorf("%v: %q is not the synopsis of %v, %q", c.args, got[1], c.command, synopsis)
+		}
+	}
+	if r := clikittest.Run(app, "lauch"); !strings.Contains(r.Stderr, `did you mean one of "launch", "latch"?`) {
+		t.Errorf("lauch: %q", r.Stderr)
+	}
+
+	// Named, the default is what rejects the word.
+	for _, args := range [][]string{{"board", "lauch"}, {"b", "lauch"}, {"board", "--compact", "lauch"}, {"--", "board", "lauch"}} {
+		if r := clikittest.Run(app, args...); r.Stderr != "tool: error: unexpected argument lauch\nUsage: tool board [flags]\nRun \"tool board --help\" for details.\n" {
+			t.Errorf("%v: %q", args, r.Stderr)
+		}
+	}
+	if r := clikittest.Run(app, "accounts", "board", "remov"); !strings.HasPrefix(r.Stderr, "tool: error: unexpected argument remov\nUsage: tool accounts board [flags]\n") {
+		t.Errorf("accounts board remov: %q", r.Stderr)
+	}
+	// A default that takes a positional takes the word.
+	j := &journal{}
+	brief := clikit.App{Name: "brief", Description: "brief indexes handoff briefs.", New: func() any { return &grammar{} }, Options: []kong.Option{kong.Bind(j)}}
+	if r := clikittest.Run(brief, "lauch"); r.Code != 0 || strings.Join(j.ran, "|") != "show lauchfalse" {
+		t.Errorf("brief lauch: %+v, ran %v", r, j.ran)
 	}
 }
