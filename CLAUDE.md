@@ -47,10 +47,14 @@ go test -run TestGrammarHelp .
   (Kong's mark for trace and validation errors) is invalid argv and gets the
   usage code with a synopsis; every other parse error, a bad enum from an
   environment variable (`checkEnvEnums`) and a failure to write help get the
-  failure code. Commands choose with `Exit`, `Fail` and `Usage`.
+  failure code. Commands choose with `Exit`, `Fail` and `Usage`, and so does
+  `checkDefaultFlags` (`check.go`), which refuses a `withargs` default's flag
+  typed before another command.
 - **Kong's wording is restated only where it misleads**, in `usageMessage`
-  (`help.go`), each rewrite pinned by `TestUsageMessages`: a Kong release that
-  rewords a message fails that test instead of passing it through. Flags are
+  (`help.go`), each rewrite pinned by `TestUsageMessages`, and in
+  `unmatchedWord`, which reports a word a `withargs` default was handed at
+  its parent, pinned by `TestWordNoCommandMatches`: a Kong release that
+  rewords a message fails those tests instead of passing it through. Flags are
   named by the placeholder `settlePlaceholders` writes into the model, so
   Kong's own lines and the help page agree.
 - **Writers pass through unwrapped.** `ctx.Stdout` is the `App.Stdout` itself,

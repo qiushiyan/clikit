@@ -59,12 +59,18 @@
 //   - A declaration whose help would be missing or untrue fails before parsing:
 //     anything visible without help, an empty Description, an enum default
 //     outside its values, a branching positional argument, kong.NoDefaultHelp,
-//     a default:"withargs" command that is hidden or has commands of its own,
-//     or a flag group Kong checks differently from its tags, such as one
-//     spanning commands or a required group of one flag. The first test (or
-//     run) of the tool names each problem.
+//     a command named like a flag ("--", "-x"), which argv cannot reach where
+//     help lists it, a default:"withargs" command that is hidden or has
+//     commands of its own, or a flag group Kong checks differently from its
+//     tags, such as one spanning commands or a required group of one flag.
+//     The first test (or run) of the tool names each problem.
 //   - Outcomes are classified by origin. Invalid argv exits with App.UsageCode
-//     after an error line, the synopsis and a pointer to --help, all on stderr.
+//     after an error line, the synopsis of the command it concerns and a
+//     pointer to its --help, all on stderr. Around a default:"withargs"
+//     command, argv is held to its parent's page: a flag of the default typed
+//     before another command is refused, since the default would not run, and
+//     a word that names no command is reported against the parent, as if it
+//     had no default, unless the default takes the word as its argument.
 //     A bad value from an environment variable, and anything else that fails,
 //     exits with App.FailureCode. A command chooses its own status with Exit
 //     (it already reported) or Fail (Run prints the error), each code declared
