@@ -98,6 +98,7 @@ func (a App) Run(args []string) (code int) {
 		kong.Name(a.Name),
 		kong.Description(a.Description),
 		kong.BindTo(a.Stdin, (*io.Reader)(nil)),
+		kong.WithBeforeResolve(checkDefaultFlags),
 		kong.WithBeforeApply(checkEnvEnums),
 		kong.OptionFunc(own),
 		kong.PostBuild(own),

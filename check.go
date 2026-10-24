@@ -173,6 +173,52 @@ func valueName(v *kong.Value) string {
 	return "argument <" + v.Name + ">"
 }
 
+// checkDefaultFlags refuses a flag Kong parsed for a withargs default that
+// does not run. Kong offers a default's flags at its parent's level, so in
+// `tool --compact other` it parses --compact as the default's, runs the
+// command the later word names, and applies the flag to the default, which
+// never runs. The hook runs after help and before resolvers, so the first
+// such flag in argv is a usage error before anything is applied.
+func checkDefaultFlags(ctx *kong.Context) error {
+	ran := selected(ctx.Model, ctx)
+	var chain []*kong.Node // the command that runs, up to the root
+	for n := ran; n != nil; n = n.Parent {
+		chain = append(chain, n)
+	}
+	for _, p := range ctx.Path {
+		if p.Flag == nil {
+			continue
+		}
+		for _, n := range chain {
+			d := defaultWithArgs(n)
+			if d == nil || slices.Contains(chain, d) || !slices.Contains(d.Flags, p.Flag) {
+				continue
+			}
+			// A command below n may take a flag of that name itself, given
+			// after its name. Above n none can: Kong refuses a default's flag
+			// that repeats an ancestor's.
+			fix := ""
+			for _, c := range chain[:slices.Index(chain, n)] {
+				if slices.ContainsFunc(c.Flags, func(f *kong.Flag) bool { return f.Name == p.Flag.Name }) {
+					name := commandName(ctx.Model, c)
+					fix = fmt.Sprintf(": the --%s of %s goes after %s", p.Flag.Name, name, name)
+					break
+				}
+			}
+			return Usage(fmt.Errorf("--%s belongs to %s, which %s does not run%s", p.Flag.Name, commandName(ctx.Model, d), commandName(ctx.Model, ran), fix))
+		}
+	}
+	return nil
+}
+
+// commandName is n's command path, or the tool's name for the root.
+func commandName(app *kong.Application, n *kong.Node) string {
+	if n.Type == kong.ApplicationNode {
+		return app.Name
+	}
+	return strings.Join(pathBelow(n, nil), " ")
+}
+
 // checkEnvEnums reports an enum value that came from an environment variable
 // and is not allowed, before Kong's validation reports it as a mistake in argv.
 // A value given in argv wins over the variable and is left to Kong.

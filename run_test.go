@@ -325,6 +325,172 @@ func TestUsageErrors(t *testing.T) {
 	}
 }
 
+// boardCLI has withargs defaults at two levels, the root's board and
+// accounts' board, whose flags parse at their parents' levels; launch takes a
+// --json of its own.
+type boardCLI struct {
+	Board    boardCmd    `cmd:"" default:"withargs" aliases:"b" help:"The account board."`
+	Launch   launchCmd   `cmd:"" help:"Launch a session."`
+	Latch    launchCmd   `cmd:"" help:"Hold a session's account."`
+	Lurch    launchCmd   `cmd:"" hidden:"" help:"Internal: launch anywhere."`
+	Cafe     launchCmd   `cmd:"" name:"café" help:"Take a break."`
+	Accounts accountsCmd `cmd:"" help:"Manage accounts."`
+}
+
+// statusCLI runs itself when --status skips its default, which
+// kong.IgnoreDefault lets a flag do.
+type statusCLI struct {
+	Status statusFlag `help:"Print the tool's status instead of the board."`
+	Board  boardCmd   `cmd:"" default:"withargs" help:"The account board."`
+}
+
+type statusFlag bool
+
+func (statusFlag) IgnoreDefault() {}
+
+func (*statusCLI) Run(j *journal) error {
+	j.add("status")
+	return nil
+}
+
+type boardCmd struct {
+	Compact bool `short:"c" help:"One row per account."`
+	JSON    bool `name:"json" help:"Print the board as JSON."`
+	Trace   bool `hidden:"" help:"Log each refresh."`
+}
+
+func (c *boardCmd) Run(j *journal) error {
+	j.add(fmt.Sprintf("board compact=%v json=%v", c.Compact, c.JSON))
+	return nil
+}
+
+type launchCmd struct {
+	JSON bool `name:"json" help:"Print the launch as JSON."`
+}
+
+func (c *launchCmd) Run(j *journal, _ *deps) error {
+	j.add(fmt.Sprintf("launch json=%v", c.JSON))
+	return nil
+}
+
+type accountsCmd struct {
+	Board  accountsBoardCmd `cmd:"" default:"withargs" help:"The board of accounts alone."`
+	Remove removeCmd        `cmd:"" help:"Forget an account."`
+}
+
+type accountsBoardCmd struct {
+	Wide bool `help:"Every column."`
+}
+
+func (c *accountsBoardCmd) Run(j *journal) error {
+	j.add(fmt.Sprintf("accounts board wide=%v", c.Wide))
+	return nil
+}
+
+type removeCmd struct {
+	Account string `arg:"" optional:"" help:"Account to forget."`
+}
+
+func (c *removeCmd) Run(j *journal) error {
+	j.add("accounts remove " + c.Account)
+	return nil
+}
+
+func newBoardApp() (clikit.App, *journal) {
+	j := &journal{}
+	return clikit.App{
+		Name:        "tool",
+		Description: "tool shows accounts and launches sessions.",
+		New:         func() any { return &boardCLI{} },
+		Options: []kong.Option{
+			kong.Bind(j),
+			kong.BindToProvider(func() (*deps, error) {
+				j.mu.Lock()
+				j.provided++
+				j.mu.Unlock()
+				return &deps{}, nil
+			}),
+		},
+	}, j
+}
+
+// A withargs default's flag typed before another command would be applied to
+// the default, which does not run. It is refused as invalid argv before
+// anything runs, naming the flag, its command and the command that runs,
+// under the synopsis of the command that runs.
+func TestDefaultFlagBeforeAnotherCommand(t *testing.T) {
+	cases := []struct {
+		args    []string
+		command []string // the command that would run
+		msg     string
+	}{
+		{[]string{"--compact", "launch"}, []string{"launch"}, "--compact belongs to board, which launch does not run"},
+		{[]string{"-c", "launch"}, []string{"launch"}, "--compact belongs to board, which launch does not run"},
+		{[]string{"--trace", "launch"}, []string{"launch"}, "--trace belongs to board, which launch does not run"},
+		{[]string{"--json", "launch"}, []string{"launch"}, "--json belongs to board, which launch does not run: the --json of launch goes after launch"},
+		{[]string{"--compact", "accounts", "remove", "a@x.com"}, []string{"accounts", "remove"}, "--compact belongs to board, which accounts remove does not run"},
+		{[]string{"accounts", "--wide", "remove"}, []string{"accounts", "remove"}, "--wide belongs to accounts board, which accounts remove does not run"},
+		{[]string{"--compact", "accounts"}, []string{"accounts", "board"}, "--compact belongs to board, which accounts board does not run"},
+		{[]string{"--compact", "accounts", "--wide", "remove"}, []string{"accounts", "remove"}, "--compact belongs to board, which accounts remove does not run"},
+	}
+	for _, c := range cases {
+		app, j := newBoardApp()
+		app.UsageCode = 3
+		r := clikittest.Run(app, c.args...)
+		if r.Code != 3 || r.Stdout != "" || len(j.ran) > 0 || j.provided > 0 {
+			t.Errorf("%v: exit %d, ran %v, provider called %d times, stdout %q", c.args, r.Code, j.ran, j.provided, r.Stdout)
+		}
+		lines := strings.Split(strings.TrimSuffix(r.Stderr, "\n"), "\n")
+		if len(lines) != 3 || lines[0] != "tool: error: "+c.msg {
+			t.Errorf("%v: stderr:\n%s", c.args, r.Stderr)
+			continue
+		}
+		help := clikittest.Run(app, append(slices.Clone(c.command), "--help")...)
+		if synopsis, _, _ := strings.Cut(help.Stdout, "\n"); lines[1] != synopsis {
+			t.Errorf("%v: %q is not the synopsis of its help, %q", c.args, lines[1], synopsis)
+		}
+	}
+
+	// The default's flags still parse where help places them, and help
+	// still comes first.
+	for _, c := range []struct {
+		args []string
+		ran  string
+	}{
+		{[]string{"--compact"}, "board compact=true json=false"},
+		{[]string{"--compact", "board"}, "board compact=true json=false"},
+		{[]string{"b", "-c", "--json"}, "board compact=true json=true"},
+		{[]string{"launch", "--json"}, "launch json=true"},
+		{[]string{"accounts", "--wide"}, "accounts board wide=true"},
+		{[]string{"--compact", "launch", "--help"}, ""},
+	} {
+		app, j := newBoardApp()
+		if r := clikittest.Run(app, c.args...); r.Code != 0 || r.Stderr != "" || strings.Join(j.ran, "|") != c.ran {
+			t.Errorf("%v: exit %d, ran %v, stderr %q", c.args, r.Code, j.ran, r.Stderr)
+		}
+	}
+
+	// With the default skipped, the root runs, and the default's flag is
+	// refused as before any other command.
+	j := &journal{}
+	status := clikit.App{Name: "tool", Description: "tool shows accounts.", New: func() any { return &statusCLI{} }, Options: []kong.Option{kong.Bind(j)}}
+	if r := clikittest.Run(status, "--status"); r.Code != 0 || strings.Join(j.ran, "|") != "status" {
+		t.Errorf("--status: exit %d, ran %v, stderr %q", r.Code, j.ran, r.Stderr)
+	}
+	j.ran = nil
+	if r := clikittest.Run(status, "--compact", "--status"); r.Code != 2 || len(j.ran) > 0 || !strings.HasPrefix(r.Stderr, "tool: error: --compact belongs to board, which tool does not run\nUsage: tool [<command>] [flags]\n") {
+		t.Errorf("--compact --status: exit %d, ran %v, stderr %q", r.Code, j.ran, r.Stderr)
+	}
+
+	// A default that takes a positional: a word naming no command is its
+	// argument, and its flag before a command is refused all the same.
+	j.ran = nil
+	brief := clikit.App{Name: "brief", Description: "brief indexes handoff briefs.", New: func() any { return &grammar{} }, Options: []kong.Option{kong.Bind(j)}}
+	if r := clikittest.Run(brief, "--full", "exec", "ls"); r.Code != 2 || len(j.ran) > 0 || !strings.HasPrefix(r.Stderr, "brief: error: --full belongs to show, which exec does not run\n") {
+		t.Errorf("--full exec ls: exit %d, ran %v, stderr %q", r.Code, j.ran, r.Stderr)
+	}
+}
+
 // exitCodesListed are the codes a help page's Exit codes section lists.
 func exitCodesListed(page string) []string {
 	_, section, _ := strings.Cut(page, "\nExit codes:\n")
