@@ -27,7 +27,7 @@ func checkDeclaration(k *kong.Kong) error {
 	walk = func(n *kong.Node) {
 		where := location(app, n)
 		if n.Type == kong.ArgumentNode {
-			problems = append(problems, "branching argument <"+n.Name+"> is not supported; make it a positional of each command that needs it")
+			problems = append(problems, "branching argument <"+n.Name+"> is not supported: make it a positional of each command that needs it")
 			return
 		}
 		if n.Type == kong.CommandNode && !n.Hidden && strings.TrimSpace(n.Help) == "" {
@@ -63,7 +63,7 @@ func checkDeclaration(k *kong.Kong) error {
 				}
 				if required > 0 && required < len(members) {
 					seenXor[key] = true
-					problems = append(problems, fmt.Sprintf("xor group %q marks only some of %s required; Kong then requires none, so mark all or none", key, flagNames(members)))
+					problems = append(problems, fmt.Sprintf("xor group %q marks only some of %s required, so Kong requires none: mark all or none", key, flagNames(members)))
 				}
 			}
 		}
@@ -146,7 +146,7 @@ func groupProblems(app *kong.Application, n *kong.Node) []string {
 			for _, f := range flags {
 				spans = append(spans, "--"+f.Name+where)
 			}
-			problems = append(problems, fmt.Sprintf("%s group %q spans %s; Kong checks a group within one command, so declare its flags together", g.kind, g.key, strings.Join(spans, ", ")))
+			problems = append(problems, fmt.Sprintf("%s group %q spans %s, but Kong checks a group within one command: declare its flags on one command, or give each command's group its own name", g.kind, g.key, strings.Join(spans, ", ")))
 			continue
 		}
 		// A command below reports a group that spans down to it; a group with
@@ -156,7 +156,7 @@ func groupProblems(app *kong.Application, n *kong.Node) []string {
 			continue
 		}
 		if len(flags) == 1 {
-			problems = append(problems, fmt.Sprintf("required %s group %q has only --%s%s; Kong never requires a flag alone in its group", g.kind, g.key, flags[0].Name, where))
+			problems = append(problems, fmt.Sprintf("required %s group %q has only --%s%s, and Kong never requires a flag alone in its group: give the group another flag or drop it", g.kind, g.key, flags[0].Name, where))
 			continue
 		}
 		for _, f := range flags {
@@ -167,9 +167,9 @@ func groupProblems(app *kong.Application, n *kong.Node) []string {
 			and := groupsOf(f)[i].key
 			switch {
 			case g.kind == "xor":
-				problems = append(problems, fmt.Sprintf("flag --%s%s is in required xor group %q and in and group %q; Kong then demands all of %q even when another flag of %q is given, so keep it to one group", f.Name, where, g.key, and, and, g.key))
+				problems = append(problems, fmt.Sprintf("flag --%s%s is in required xor group %q and in and group %q, so Kong demands all of %q even when another flag of %q is given: keep it to one group", f.Name, where, g.key, and, and, g.key))
 			case !f.Required:
-				problems = append(problems, fmt.Sprintf("flag --%s%s is in required and group %q and in and group %q without being required itself; what Kong requires then depends on the order of its groups, so mark it required or keep it to one and group", f.Name, where, g.key, and))
+				problems = append(problems, fmt.Sprintf("flag --%s%s is in required and group %q and in and group %q without being required itself, so what Kong requires depends on the order of its groups: mark it required or keep it to one and group", f.Name, where, g.key, and))
 			default:
 				continue
 			}

@@ -741,9 +741,8 @@ func TestRowsWrap(t *testing.T) {
 	}
 }
 
-// Kong checks a group among one command's flags, never requires a flag alone
-// in its group, and takes a flag's requirement from its last and group, so a
-// group whose checks help could not state is rejected.
+// A flag group Kong checks differently from its tags is rejected, naming the
+// flag; groupProblems states Kong's rules.
 type spanningGroup struct {
 	Local bool          `xor:"where" required:"" help:"Use the local copy."`
 	Fetch spanningFetch `cmd:"" help:"Fetch a copy."`
@@ -783,15 +782,15 @@ func (*statedGroups) Run() error { return nil }
 func TestFlagGroups(t *testing.T) {
 	app := clikit.App{Name: "g", Description: "g groups flags.", New: func() any { return &spanningGroup{} }}
 	r := clikittest.Run(app, "--help")
-	if want := `xor group "where" spans --local, --remote of fetch; Kong checks a group within one command`; r.Code != 1 || !strings.Contains(r.Stderr, want) || strings.Contains(r.Stderr, "has only") {
+	if want := `xor group "where" spans --local, --remote of fetch`; r.Code != 1 || !strings.Contains(r.Stderr, want) || strings.Contains(r.Stderr, "has only") {
 		t.Errorf("spanning: exit %d, stderr %q", r.Code, r.Stderr)
 	}
 
 	app.New = func() any { return &tangledGroups{} }
 	r = clikittest.Run(app, "--help")
 	for _, want := range []string{
-		`required and group "solo" has only --solo; Kong never requires a flag alone in its group`,
-		`flag --keep is in required xor group "how" and in and group "note"; Kong then demands all of "note" even when another flag of "how" is given`,
+		`required and group "solo" has only --solo`,
+		`flag --keep is in required xor group "how" and in and group "note"`,
 		`flag --y is in required and group "a" and in and group "b" without being required itself`,
 	} {
 		if !strings.Contains(r.Stderr, want) {

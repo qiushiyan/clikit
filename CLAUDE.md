@@ -70,12 +70,12 @@ the test that pins it.
 
 The module is public at `github.com/qiushiyan/clikit` and consumed by tag.
 Release by tagging `vX.Y.Z` on `main` and pushing the tag; a change to help
-output or to the public surface is visible in every consumer's golden pages,
-so say so in the tag message. A change to the public surface also updates the
-go-cli skill's clikit section in the same pass, since tools are written from
-it. The consumers are `grep -l "qiushiyan/clikit v" ~/dev/*/go.mod`; each moves
-with `go get github.com/qiushiyan/clikit@vX.Y.Z` and reviews its golden-page
-diff.
+output shows in every consumer's golden pages and a change to the public
+surface in its build, so say so in the tag message. A change to the public
+surface also updates the go-cli skill's clikit section in the same pass, since
+tools are written from it. The consumers are
+`grep -l "qiushiyan/clikit v" ~/dev/*/go.mod`; each moves with
+`go get github.com/qiushiyan/clikit@vX.Y.Z` and reviews its golden-page diff.
 
 Docs follow `~/dotfiles/docs/documentation-standards.md`, with paths written
 from the repository root.

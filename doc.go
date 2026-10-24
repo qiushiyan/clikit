@@ -55,12 +55,9 @@
 //   - A declaration whose help would be missing or untrue fails before parsing:
 //     anything visible without help, an empty Description, an enum default
 //     outside its values, a branching positional argument, kong.NoDefaultHelp,
-//     and a flag group help could not state as Kong checks it (an xor group
-//     with only some members required, a group with flags on more than one
-//     command, a required group of one flag, a member of a required xor group
-//     that is also in an and group, or a flag not required itself in a
-//     required and group and another). The first test (or run) of the tool
-//     names each problem.
+//     or a flag group Kong checks differently from its tags, such as one
+//     spanning commands or a required group of one flag. The first test (or
+//     run) of the tool names each problem.
 //   - Outcomes are classified by origin. Invalid argv exits with App.UsageCode
 //     after an error line, the synopsis and a pointer to --help, all on stderr.
 //     A bad value from an environment variable, and anything else that fails,

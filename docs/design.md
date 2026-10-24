@@ -80,20 +80,15 @@ each step sits in it:
   reader opening one command's page wants that command first; the tool-wide
   text follows.
 - **Reject what cannot be rendered truthfully.** A branching positional
-  argument, an enum default outside its values and `kong.NoDefaultHelp` fail
-  at construction, and so does a flag group whose Kong checks differ from its
-  tags. Kong requires no member of an xor group marked required only in part.
-  It checks a group among one command's flags, so a group spanning a command
-  and its parent is never checked, and it never requires a flag alone in its
-  group. It demands the and group of a required xor member whichever member
-  is given, and takes a flag's requirement from its last and group, so for an
-  unrequired flag in a required and group and in another, what Kong requires
-  depends on tag order. Rendering any of these approximately would
-  reintroduce the disagreement clikit exists to prevent, and modelling Kong's
-  checks in the renderer would tie help to those quirks rather than to the
-  declaration.
-  Inside the shapes that remain, help's one-step reading of and groups
-  (`andRequired`) is exact.
+  argument, an enum default outside its values, `kong.NoDefaultHelp` and a
+  flag group Kong checks differently from its tags fail at construction;
+  `check.go` states Kong's rule beside each rejection. Rendering any of these
+  approximately would reintroduce the disagreement clikit exists to prevent,
+  and modelling Kong's group checks in the renderer would tie help to Kong's
+  quirks rather than to the declaration. The renderer leans on the
+  rejections: `andRequired` reads and groups one step deep, which is exact
+  only for the group shapes that build, so relaxing a group rejection means
+  teaching the renderer that shape first.
 - **Help ends the run by panicking with `exitSignal`.** Kong's help hook calls
   its exit function and then returns; an exit function that only records the
   status lets parsing continue, so the command would run after its own help.
