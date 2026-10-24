@@ -42,9 +42,10 @@ func TestSingleCommandTool(t *testing.T) {
 }
 
 // The rest of Kong's grammar that help has to state: a default command's own
-// invocation, passthrough, typed placeholders, required and-groups, required
-// flags in the command list, a command that runs with or without one below
-// it, and authored text and long words left whole.
+// invocation (its prose only on its own page), passthrough, typed
+// placeholders, required and-groups, required flags in the command list, a
+// command that runs with or without one below it, and authored text and long
+// words left whole.
 type grammar struct {
 	Show   showCmd   `cmd:"" default:"withargs" help:"Show the brief a fragment names."`
 	Exec   execCmd   `cmd:"" help:"Run a program with the tool's environment."`
@@ -60,6 +61,10 @@ func (grammar) HelpSections() []clikit.Section {
 type showCmd struct {
 	Fragment string `arg:"" optional:"" help:"Part of a brief's name; the index when omitted."`
 	Full     bool   `help:"Print the whole brief."`
+}
+
+func (showCmd) Help() string {
+	return "The card a reader needs before picking the brief up."
 }
 
 type execCmd struct {

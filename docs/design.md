@@ -81,16 +81,22 @@ each step sits in it:
   reader opening one command's page wants that command first; the tool-wide
   text follows.
 - **Reject what cannot be rendered truthfully.** A branching positional
-  argument, an enum default outside its values, `kong.NoDefaultHelp` and a
-  flag group Kong checks differently from its tags fail at construction;
+  argument, an enum default outside its values, `kong.NoDefaultHelp`, a
+  `withargs` default command that is hidden or has commands of its own, and
+  a flag group Kong checks differently from its tags fail at construction;
   `check.go` states Kong's rule beside each rejection. Rendering any of these
   approximately would reintroduce the disagreement clikit exists to prevent,
   and modelling Kong's group checks in the renderer would tie help to Kong's
-  quirks rather than to the declaration. Flag groups have one model,
-  `groups.go`, which the renderer and `groupProblems` both read, and the
-  renderer leans on the rejections: it finds the flags a required and group
-  demands one step deep, which is exact only for the group shapes that build,
-  so relaxing a group rejection means teaching the renderer that shape first.
+  quirks rather than to the declaration. A hidden `withargs` default could be
+  rendered faithfully, as its parent's own invocation with the name left out
+  of the page and its errors; it is rejected because no tool needs that, and
+  a rejection can be relaxed into a rendering later without moving any
+  consumer's pages, where a shipped rendering cannot be withdrawn. Flag
+  groups have one model, `groups.go`, which the renderer and `groupProblems`
+  both read, and the renderer leans on the rejections: it finds the flags a
+  required and group demands one step deep, which is exact only for the
+  group shapes that build, so relaxing a group rejection means teaching the
+  renderer that shape first.
 - **Help ends the run by panicking with `exitSignal`.** Kong's help hook calls
   its exit function and then returns; an exit function that only records the
   status lets parsing continue, so the command would run after its own help.
@@ -113,6 +119,15 @@ each step sits in it:
 - **Shared sections for a subset of commands.** `Shared` reaches every page
   below; a section that serves only some commands is returned by those
   commands' own `HelpSections`, from one shared value.
+- **A default command's prose on its parent's page.** Its arguments and
+  flags parse at the parent's level, so the parent's page lists them; its
+  `Help()` and sections are authored text, and only the author knows whether
+  the parent's page should repeat them or already says the same in its own
+  words. A tool whose default command is the whole tool returns one shared
+  value from both, as above. Rendering the default's prose always would
+  double a root page that already describes it, and rendering it only when
+  the parent has none would let a one-line root `Help()` silently drop the
+  default's examples from the page an agent reads first.
 - **Kong `group:` titles.** Presentation only; flags render as one list.
 - **A Markdown or JSON export of the command tree.** Skills point agents at
   `--help`, the one consumer that exists. When a skill or README needs an

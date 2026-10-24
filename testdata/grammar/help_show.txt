@@ -2,6 +2,8 @@ Usage: brief show [<fragment>] [flags]
 
 Show the brief a fragment names.
 
+The card a reader needs before picking the brief up.
+
 Arguments:
   <fragment>    Part of a brief's name; the index when omitted (optional).
 

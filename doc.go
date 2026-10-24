@@ -47,14 +47,19 @@
 //     value, never in grammar hooks or mappers. No option can take this away.
 //   - Help is rendered from the model. The synopsis, arguments, flags, typed
 //     placeholders, defaults, enums, environment variables, flag-group
-//     constraints, passthrough, a default command's arguments and flags, and
-//     exit codes come from the same declaration that parses argv, and Kong's
-//     error lines name a flag as help does. Generated rows wrap at 100
-//     columns; Help() text and sections print verbatim, a command's own
-//     sections before the Shared ones it inherits.
+//     constraints, passthrough and exit codes come from the same declaration
+//     that parses argv, and Kong's error lines name a flag as help does. A
+//     default:"withargs" command's arguments and flags parse at its parent's
+//     level, so the parent's page lists them with their constraints; its
+//     Help() and sections stay on its own page: a tool whose default command
+//     is the whole tool returns the same text and sections from the root's
+//     methods. Generated rows wrap at 100 columns; Help() text and
+//     sections print verbatim, a command's own sections before the Shared ones
+//     it inherits.
 //   - A declaration whose help would be missing or untrue fails before parsing:
 //     anything visible without help, an empty Description, an enum default
 //     outside its values, a branching positional argument, kong.NoDefaultHelp,
+//     a default:"withargs" command that is hidden or has commands of its own,
 //     or a flag group Kong checks differently from its tags, such as one
 //     spanning commands or a required group of one flag. The first test (or
 //     run) of the tool names each problem.
