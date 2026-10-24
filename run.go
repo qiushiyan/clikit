@@ -133,21 +133,29 @@ func (a App) Run(args []string) (code int) {
 	}
 
 	ctx, err := k.Parse(args)
-	if err != nil {
-		return a.parseFailure(k.Model, err)
+	if err == nil {
+		err = ctx.Run()
 	}
-	return a.commandOutcome(ctx, ctx.Run())
+	return a.outcome(k.Model, ctx, err)
 }
 
-func (a App) parseFailure(app *kong.Application, err error) int {
-	if code, ok := a.chosen(err); ok {
-		return code
+// outcome turns what parsing or the command returned into the exit status,
+// reporting it on stderr unless the command chose Exit. ctx is nil when
+// parsing failed.
+func (a App) outcome(app *kong.Application, ctx *kong.Context, err error) int {
+	if err == nil {
+		return 0
+	}
+	if s, ok := errors.AsType[*statusError](err); ok {
+		if s.err != nil {
+			fmt.Fprintf(a.Stderr, "%s: error: %v\n", a.Name, s.err)
+		}
+		return s.code
 	}
 	if hw, ok := errors.AsType[*helpWriteError](err); ok {
 		fmt.Fprintf(a.Stderr, "%s: error: writing help: %v\n", a.Name, hw.err)
 		return a.FailureCode
 	}
-	var ctx *kong.Context
 	if pe, ok := errors.AsType[*kong.ParseError](err); ok {
 		ctx = pe.Context
 		if pe.ExitCode() == kongUsageExit {
@@ -157,21 +165,6 @@ func (a App) parseFailure(app *kong.Application, err error) int {
 	}
 	if u, ok := errors.AsType[*usageError](err); ok {
 		printUsageError(a.Stderr, app, ctx, u.err)
-		return a.UsageCode
-	}
-	fmt.Fprintf(a.Stderr, "%s: error: %v\n", a.Name, err)
-	return a.FailureCode
-}
-
-func (a App) commandOutcome(ctx *kong.Context, err error) int {
-	if err == nil {
-		return 0
-	}
-	if code, ok := a.chosen(err); ok {
-		return code
-	}
-	if u, ok := errors.AsType[*usageError](err); ok {
-		printUsageError(a.Stderr, ctx.Model, ctx, u.err)
 		return a.UsageCode
 	}
 	fmt.Fprintf(a.Stderr, "%s: error: %v\n", a.Name, err)
@@ -201,7 +194,7 @@ func Exit(code int) error {
 	if code == 0 {
 		return nil
 	}
-	return &exitError{code: code}
+	return &statusError{code: code}
 }
 
 // Fail makes a command end with status code after Run prints err the way it
@@ -213,7 +206,7 @@ func Fail(code int, err error) error {
 	if err == nil || code == 0 {
 		return err
 	}
-	return &failError{code: code, err: err}
+	return &statusError{code: code, err: err}
 }
 
 // Usage marks err as a usage error the command found itself, such as a
@@ -227,17 +220,21 @@ func Usage(err error) error {
 	return &usageError{err: err}
 }
 
-type exitError struct{ code int }
-
-func (e *exitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
-
-type failError struct {
+// statusError is a status the command chose: with Exit, which leaves err nil
+// because the command has reported, or with Fail, whose err Run prints.
+type statusError struct {
 	code int
 	err  error
 }
 
-func (e *failError) Error() string { return e.err.Error() }
-func (e *failError) Unwrap() error { return e.err }
+func (e *statusError) Error() string {
+	if e.err == nil {
+		return fmt.Sprintf("exit status %d", e.code)
+	}
+	return e.err.Error()
+}
+
+func (e *statusError) Unwrap() error { return e.err }
 
 type usageError struct{ err error }
 
@@ -250,19 +247,6 @@ type helpWriteError struct{ err error }
 
 func (e *helpWriteError) Error() string { return "writing help: " + e.err.Error() }
 func (e *helpWriteError) Unwrap() error { return e.err }
-
-// chosen reports a status the command chose with Exit or Fail, printing a
-// Fail's error first.
-func (a App) chosen(err error) (int, bool) {
-	if e, ok := errors.AsType[*exitError](err); ok {
-		return e.code, true
-	}
-	if f, ok := errors.AsType[*failError](err); ok {
-		fmt.Fprintf(a.Stderr, "%s: error: %v\n", a.Name, f.err)
-		return f.code, true
-	}
-	return 0, false
-}
 
 func hasChild(n *kong.Node, name string) bool {
 	return slices.ContainsFunc(n.Children, func(c *kong.Node) bool {

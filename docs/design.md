@@ -35,7 +35,7 @@ each step sits in it:
 
 `ctx.Run` then calls the selected command; providers registered with
 `kong.BindToProvider` run only when a Run method asks for their value.
-`parseFailure` and `commandOutcome` turn the result into a status:
+`outcome` turns what `Parse` or the command returned into a status:
 
 - **Help or `--version`:** 0, on stdout.
 - **Exit 80 from Kong, or `Usage(err)`:** `App.UsageCode`, with the error
@@ -79,11 +79,21 @@ each step sits in it:
 - **A command's own sections come before the Shared ones it inherits.** A
   reader opening one command's page wants that command first; the tool-wide
   text follows.
-- **Reject what cannot be rendered truthfully.** An xor group with only some
-  members required (Kong then requires none), a branching positional argument,
-  an enum default outside its values and `kong.NoDefaultHelp` fail at
-  construction. Rendering them approximately would reintroduce the
-  disagreement clikit exists to prevent.
+- **Reject what cannot be rendered truthfully.** A branching positional
+  argument, an enum default outside its values and `kong.NoDefaultHelp` fail
+  at construction, and so does a flag group whose Kong checks differ from its
+  tags. Kong requires no member of an xor group marked required only in part.
+  It checks a group among one command's flags, so a group spanning a command
+  and its parent is never checked, and it never requires a flag alone in its
+  group. It demands the and group of a required xor member whichever member
+  is given, and takes a flag's requirement from its last and group, so for an
+  unrequired flag in a required and group and in another, what Kong requires
+  depends on tag order. Rendering any of these approximately would
+  reintroduce the disagreement clikit exists to prevent, and modelling Kong's
+  checks in the renderer would tie help to those quirks rather than to the
+  declaration.
+  Inside the shapes that remain, help's one-step reading of and groups
+  (`andRequired`) is exact.
 - **Help ends the run by panicking with `exitSignal`.** Kong's help hook calls
   its exit function and then returns; an exit function that only records the
   status lets parsing continue, so the command would run after its own help.

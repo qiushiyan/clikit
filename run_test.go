@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -476,10 +476,6 @@ func TestRenameReachesHelp(t *testing.T) {
 
 func TestHelpPagesGolden(t *testing.T) {
 	app, _ := newApp()
-	pages := clikittest.HelpPages(t, app)
-	if got := strings.Join(slices.Sorted(maps.Keys(pages)), "|"); got != "|echo|fail|list|repo|repo add|repo remove|settle" {
-		t.Fatalf("pages: %s", got)
-	}
 	clikittest.Golden(t, app, "testdata/registry")
 }
 
@@ -725,14 +721,105 @@ func TestLaterBindingReplacesEarlier(t *testing.T) {
 	}
 }
 
-// Generated rows wrap at a fixed width; authored text is left as written.
+// Generated rows wrap at a fixed width; authored text is left as written. The
+// golden files are every page the tests above render.
 func TestRowsWrap(t *testing.T) {
-	app, _ := newApp()
-	for path, page := range clikittest.HelpPages(t, app) {
-		for line := range strings.SplitSeq(page, "\n") {
+	files, _ := filepath.Glob("testdata/*/help*.txt")
+	if len(files) == 0 {
+		t.Fatal("no golden pages under testdata")
+	}
+	for _, file := range files {
+		page, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for line := range strings.SplitSeq(string(page), "\n") {
 			if utf8.RuneCountInString(line) > 100 {
-				t.Errorf("%q: line over 100 columns: %q", path, line)
+				t.Errorf("%s: line over 100 columns: %q", file, line)
 			}
 		}
+	}
+}
+
+// Kong checks a group among one command's flags, never requires a flag alone
+// in its group, and takes a flag's requirement from its last and group, so a
+// group whose checks help could not state is rejected.
+type spanningGroup struct {
+	Local bool          `xor:"where" required:"" help:"Use the local copy."`
+	Fetch spanningFetch `cmd:"" help:"Fetch a copy."`
+}
+
+type spanningFetch struct {
+	Remote bool `xor:"where" required:"" help:"Use the remote copy."`
+}
+
+type tangledGroups struct {
+	Solo   string `required:"" and:"solo" help:"Solo."`
+	Keep   string `xor:"how" required:"" and:"note" help:"Keep."`
+	Delete bool   `xor:"how" required:"" help:"Delete."`
+	Note   string `and:"note" help:"Note."`
+	X      string `required:"" and:"a" help:"X."`
+	Y      string `and:"a,b" help:"Y."`
+	Z      string `and:"b" help:"Z."`
+}
+
+// Groups Kong checks as declared: optional groups that overlap, a required
+// flag in two and groups, and a flag an and group requires inside an optional
+// xor group.
+type statedGroups struct {
+	User     string `xor:"auth" and:"cred" help:"Account name."`
+	Password string `and:"cred" help:"Account password."`
+	Token    string `xor:"auth" help:"API token."`
+	Host     string `required:"" and:"site,port" help:"Host."`
+	Path     string `and:"site" help:"Path."`
+	Port     int    `and:"port" help:"Port."`
+	Mirror   string `xor:"source" and:"mirror" help:"Mirror to copy."`
+	Local    string `xor:"source" help:"Local directory."`
+	Into     string `required:"" and:"mirror" help:"Destination."`
+}
+
+func (*statedGroups) Run() error { return nil }
+
+func TestFlagGroups(t *testing.T) {
+	app := clikit.App{Name: "g", Description: "g groups flags.", New: func() any { return &spanningGroup{} }}
+	r := clikittest.Run(app, "--help")
+	if want := `xor group "where" spans --local, --remote of fetch; Kong checks a group within one command`; r.Code != 1 || !strings.Contains(r.Stderr, want) || strings.Contains(r.Stderr, "has only") {
+		t.Errorf("spanning: exit %d, stderr %q", r.Code, r.Stderr)
+	}
+
+	app.New = func() any { return &tangledGroups{} }
+	r = clikittest.Run(app, "--help")
+	for _, want := range []string{
+		`required and group "solo" has only --solo; Kong never requires a flag alone in its group`,
+		`flag --keep is in required xor group "how" and in and group "note"; Kong then demands all of "note" even when another flag of "how" is given`,
+		`flag --y is in required and group "a" and in and group "b" without being required itself`,
+	} {
+		if !strings.Contains(r.Stderr, want) {
+			t.Errorf("missing %q in %q", want, r.Stderr)
+		}
+	}
+	if r.Code != 1 {
+		t.Errorf("tangled: exit %d", r.Code)
+	}
+
+	app.New = func() any { return &statedGroups{} }
+	help := clikittest.Run(app, "--help")
+	for _, want := range []string{
+		"At most one of --user, --token.",
+		"All or none of --user, --password.",
+		"At most one of --mirror, --local.",
+		"Path (required).",
+		"Port (required).",
+		"Mirror to copy (required).",
+	} {
+		if !strings.Contains(help.Stdout, want) {
+			t.Errorf("stated: missing %q in:\n%s%s", want, help.Stdout, help.Stderr)
+		}
+	}
+	if r := clikittest.Run(app, "--host=h", "--path=p", "--mirror=m", "--into=d"); r.Code != 2 || !strings.Contains(r.Stderr, "--port") {
+		t.Errorf("Kong requires --port as help says: %+v", r)
+	}
+	if r := clikittest.Run(app, "--host=h", "--path=p", "--port=1", "--mirror=m", "--into=d"); r.Code != 0 {
+		t.Errorf("every required flag given: %+v", r)
 	}
 }

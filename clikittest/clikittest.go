@@ -48,10 +48,10 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
-// HelpPages renders the help of the root and of every visible command, keyed
+// helpPages renders the help of the root and of every visible command, keyed
 // by command path ("" for the root, "repo add" for a nested command). Each page
 // must exit 0 with nothing on stderr.
-func HelpPages(t testing.TB, app clikit.App) map[string]string {
+func helpPages(t testing.TB, app clikit.App) map[string]string {
 	t.Helper()
 	if r := Run(app, "--help"); r.Code != 0 || r.Stderr != "" {
 		t.Fatalf("--help: exit %d, stderr:\n%s", r.Code, r.Stderr)
@@ -89,7 +89,7 @@ func commandPaths(n *kong.Node, prefix []string) [][]string {
 // CLIKIT_UPDATE=1 to rewrite the files from the pages.
 func Golden(t testing.TB, app clikit.App, dir string) {
 	t.Helper()
-	compare(t, dir, HelpPages(t, app))
+	compare(t, dir, helpPages(t, app))
 }
 
 func compare(t testing.TB, dir string, pages map[string]string) {

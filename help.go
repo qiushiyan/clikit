@@ -60,8 +60,7 @@ func page(a App, app *kong.Application, n *kong.Node) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Usage: %s\n", synopsis(app, n))
 	if d := n.DefaultCmd; d != nil && d.Tag.Default == "withargs" {
-		parts, optional := usageParts(d, n)
-		fmt.Fprintf(&b, "   or: %s\n", joinUsage(commandLine(app, n), parts, optional))
+		fmt.Fprintf(&b, "   or: %s\n", usageLine(commandLine(app, n), d, n))
 	}
 	if help := strings.TrimSpace(n.Help); help != "" {
 		fmt.Fprintf(&b, "\n%s\n", help)
@@ -107,7 +106,7 @@ func page(a App, app *kong.Application, n *kong.Node) string {
 	if len(deflt) > 0 {
 		writeRows(&b, fmt.Sprintf("Arguments and flags of %s, the default command", n.DefaultCmd.Name), deflt, width)
 	}
-	writeLines(&b, "Constraints", constraints(scope))
+	writeRows(&b, "Constraints", constraints(scope), 0)
 
 	var cmds []row
 	for _, c := range runnableBelow(n) {
@@ -135,11 +134,13 @@ func page(a App, app *kong.Application, n *kong.Node) string {
 // required xor group as alternatives), positional arguments, a command slot
 // when it has subcommands, and [flags] when optional flags apply.
 func synopsis(app *kong.Application, n *kong.Node) string {
-	parts, optional := usageParts(n, nil)
-	return joinUsage(commandLine(app, n), parts, optional)
+	return usageLine(commandLine(app, n), n, nil)
 }
 
-func joinUsage(prefix string, parts []string, optional bool) string {
+// usageLine is prefix followed by n's usage parts below stop, and [flags] when
+// optional flags apply.
+func usageLine(prefix string, n, stop *kong.Node) string {
+	parts, optional := usageParts(n, stop)
 	if optional {
 		parts = append(parts, "[flags]")
 	}
@@ -256,7 +257,9 @@ func groupRequired(flags []*kong.Flag, xor string) bool {
 }
 
 // andRequired reports whether f belongs to an and group with a required
-// member: Kong then requires every member.
+// member: Kong then requires every member. checkDeclaration has ensured that a
+// member not required itself is in no other and group, so this one step finds
+// every flag Kong requires.
 func andRequired(f *kong.Flag, scope []*kong.Flag) bool {
 	for _, key := range f.And {
 		for _, m := range scope {
@@ -272,12 +275,12 @@ func required(f *kong.Flag, scope []*kong.Flag) bool {
 	return f.Required || andRequired(f, scope)
 }
 
-// constraints states each flag group in words: Kong enforces at most one
-// member of an xor group (exactly one when its members are required) and all
-// or none of an and group. A required and group needs no line: every member
-// is marked required.
-func constraints(flags []*kong.Flag) []string {
-	var lines []string
+// constraints states each flag group in words, one row each: Kong enforces at
+// most one member of an xor group (exactly one when its members are required)
+// and all or none of an and group. A required and group needs no row: every
+// member is marked required.
+func constraints(flags []*kong.Flag) []row {
+	var rows []row
 	seen := map[string]bool{}
 	for _, f := range flags {
 		for _, key := range f.Xor {
@@ -293,7 +296,7 @@ func constraints(flags []*kong.Flag) []string {
 			if groupRequired(flags, key) {
 				quantity = "Exactly one of"
 			}
-			lines = append(lines, quantity+" "+flagNames(members)+".")
+			rows = append(rows, row{label: quantity + " " + flagNames(members) + "."})
 		}
 		for _, key := range f.And {
 			if seen["and:"+key] {
@@ -309,10 +312,10 @@ func constraints(flags []*kong.Flag) []string {
 			if len(members) < 2 || andRequired(members[0], flags) {
 				continue
 			}
-			lines = append(lines, "All or none of "+flagNames(members)+".")
+			rows = append(rows, row{label: "All or none of " + flagNames(members) + "."})
 		}
 	}
-	return lines
+	return rows
 }
 
 func flagNames(flags []*kong.Flag) string {
@@ -327,7 +330,7 @@ func flagUsage(f *kong.Flag) string {
 	if f.IsBool() || f.IsCounter() {
 		return "--" + f.Name
 	}
-	return "--" + f.Name + "=" + placeholder(f)
+	return "--" + f.Name + "=" + f.FormatPlaceHolder()
 }
 
 func flagLabel(f *kong.Flag) string {
@@ -346,7 +349,7 @@ func flagLabel(f *kong.Flag) string {
 		}
 	}
 	if !f.IsBool() && !f.IsCounter() {
-		name += "=" + placeholder(f)
+		name += "=" + f.FormatPlaceHolder()
 	}
 	for _, alias := range f.Aliases {
 		name += ", --" + alias
@@ -384,12 +387,6 @@ func settlePlaceholders(k *kong.Kong) error {
 	return nil
 }
 
-// placeholder is the flag's value name as Kong formats it, from the
-// placeholder settlePlaceholders wrote.
-func placeholder(f *kong.Flag) string {
-	return f.FormatPlaceHolder()
-}
-
 func typeWord(t reflect.Type) string {
 	if t == durationType {
 		return "DURATION"
@@ -425,7 +422,8 @@ func positionalLabel(p *kong.Positional) string {
 
 func flagHelp(f *kong.Flag, scope []*kong.Flag) string {
 	var notes []string
-	if len(f.Xor) == 0 && required(f, scope) {
+	// A required xor group says "Exactly one of" under Constraints instead.
+	if required(f, scope) && (len(f.Xor) == 0 || !groupRequired(scope, f.Xor[0])) {
 		notes = append(notes, "required")
 	}
 	notes = append(notes, valueNotes(f.Value)...)
@@ -621,16 +619,6 @@ func writeRows(b *strings.Builder, title string, rows []row, width int) {
 		for _, l := range lines[1:] {
 			fmt.Fprintf(b, "%s%s\n", pad, strings.TrimSpace(l))
 		}
-	}
-}
-
-func writeLines(b *strings.Builder, title string, lines []string) {
-	if len(lines) == 0 {
-		return
-	}
-	fmt.Fprintf(b, "\n%s:\n", title)
-	for _, l := range lines {
-		fmt.Fprintf(b, "  %s\n", l)
 	}
 }
 

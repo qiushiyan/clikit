@@ -27,8 +27,8 @@ go test -run TestGrammarHelp .
 - **Kong stays visible.** Tools import `kong` for their declarations and pass
   ordinary `kong.Option`s; clikit never re-exports or wraps Kong's grammar. The
   public surface is `App`, `Exit`, `Fail`, `Usage`, `Section`, `HelpSections`
-  and `clikittest`'s `Run`, `HelpPages`, `Golden`. Growing it changes what every
-  consumer depends on, so a new export earns its place against that.
+  and `clikittest`'s `Run` and `Golden`. Growing it changes what every consumer
+  depends on, so a new export earns its place against that.
 - **Help ends the run before anything else happens.** Kong's help hook calls
   `Exit(0)` and then returns, so the exit hook panics with `exitSignal` and
   `Run` recovers only that type. Help fires in `BeforeReset`, before
@@ -41,7 +41,8 @@ go test -run TestGrammarHelp .
   cannot state truthfully is rejected in `checkDeclaration` (`check.go`)
   rather than rendered approximately: supporting a new form means rendering it
   correctly or adding it to the rejections.
-- **Outcomes are classified by origin.** A `*kong.ParseError` with exit 80
+- **Outcomes are classified by origin**, in `outcome` (`run.go`), which parse
+  and command errors both reach. A `*kong.ParseError` with exit 80
   (Kong's mark for trace and validation errors) is invalid argv and gets the
   usage code with a synopsis; every other parse error, a bad enum from an
   environment variable (`checkEnvEnums`) and a failure to write help get the
