@@ -1,0 +1,27 @@
+Usage: g send (--to=TO | --stdout) [<message>] [flags]
+
+Send a message.
+
+Arguments:
+  <message>                What to send; stdin when omitted (optional).
+
+Flags:
+      --print              Print what was sent.
+      --notify             Notify the recipient instead.
+      --to=TO              Address to send it to.
+      --stdout             Write it to stdout instead.
+      --account=ACCOUNT    Account to send from.
+      --secret=SECRET      That account's password.
+
+Inherited flags:
+  -h, --help               Show context-sensitive help.
+
+Constraints:
+  At most one of --print, --notify.
+  Exactly one of --to, --stdout.
+  All or none of --account, --secret.
+
+Exit codes:
+  0    success
+  1    failed
+  2    invalid arguments; nothing was run

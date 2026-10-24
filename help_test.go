@@ -121,6 +121,10 @@ func TestGrammarHelp(t *testing.T) {
 		t.Fatalf("default command: %+v, ran %v", r, j.ran)
 	}
 	j.ran = nil
+	if r := clikittest.Run(app); r.Code != 0 || strings.Join(j.ran, "|") != "show false" {
+		t.Fatalf("brief [<command>] runs alone: %+v, ran %v", r, j.ran)
+	}
+	j.ran = nil
 	if r := clikittest.Run(app, "exec", "-v", "ls", "-la", "--", "x"); r.Code != 0 || strings.Join(j.ran, "|") != "exec ls -la -- x" {
 		t.Fatalf("passthrough keeps flags and --: %+v, ran %v", r, j.ran)
 	}
@@ -135,8 +139,21 @@ func TestGrammarHelp(t *testing.T) {
 
 // The flag groups help states rather than rejects.
 type groupsCLI struct {
+	Send    sendCmd    `cmd:"" default:"withargs" help:"Send a message."`
 	Connect connectCmd `cmd:"" help:"Connect to a host."`
 	Pick    pickCmd    `cmd:"" help:"Pick a direction."`
+}
+
+// sendCmd is the default command, so its groups parse at g's level and g's
+// page states them; its required group means a bare g does not parse.
+type sendCmd struct {
+	Message string `arg:"" optional:"" help:"What to send; stdin when omitted."`
+	Print   bool   `xor:"report" help:"Print what was sent."`
+	Notify  bool   `xor:"report" help:"Notify the recipient instead."`
+	To      string `xor:"dest" required:"" help:"Address to send it to."`
+	Stdout  bool   `xor:"dest" required:"" help:"Write it to stdout instead."`
+	Account string `and:"login" help:"Account to send from."`
+	Secret  string `and:"login" help:"That account's password."`
 }
 
 // connectCmd has optional groups that overlap, a required flag in two and
@@ -165,6 +182,7 @@ type pickCmd struct {
 	Loud  bool `xor:"noise" required:"" hidden:""`
 }
 
+func (*sendCmd) Run() error    { return nil }
 func (*connectCmd) Run() error { return nil }
 func (*pickCmd) Run() error    { return nil }
 
@@ -181,6 +199,10 @@ func TestFlagGroupHelp(t *testing.T) {
 		{[]string{"connect", "--host=h", "--path=p", "--port=1", "--mirror=m", "--into=d"}, 0, ""},
 		{[]string{"pick", "--south", "--west"}, 2, "--north"},
 		{[]string{"pick", "--north", "--west"}, 0, ""},
+		{nil, 2, "--to"},
+		{[]string{"--print", "--notify", "--stdout"}, 2, "--print and --notify"},
+		{[]string{"--account=me", "--stdout"}, 2, "--secret"},
+		{[]string{"--stdout", "hi"}, 0, ""},
 	} {
 		if r := clikittest.Run(app, c.args...); r.Code != c.code || !strings.Contains(r.Stderr, c.names) {
 			t.Errorf("%v: Kong does not enforce what help states: %+v", c.args, r)

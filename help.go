@@ -85,10 +85,13 @@ func page(a App, app *kong.Application, n *kong.Node) string {
 		inherited = append(inherited, flagRows(visibleFlags(p), sc)...)
 	}
 	// A default command's arguments and flags parse at this level too, so
-	// this page lists them.
+	// this page lists them and states their groups: the default's scope is
+	// this level's flags and its own.
+	parsed := sc
 	var defaultRows []row
 	if deflt != nil {
-		defaultRows = append(positionalRows(deflt), flagRows(visibleFlags(deflt), scopeOf(deflt))...)
+		parsed = scopeOf(deflt)
+		defaultRows = append(positionalRows(deflt), flagRows(visibleFlags(deflt), parsed)...)
 	}
 	width := labelWidth(args, own, inherited, defaultRows)
 	writeRows(&b, "Arguments", args, width)
@@ -97,7 +100,7 @@ func page(a App, app *kong.Application, n *kong.Node) string {
 	if len(defaultRows) > 0 {
 		writeRows(&b, fmt.Sprintf("Arguments and flags of %s, the default command", deflt.Name), defaultRows, width)
 	}
-	writeRows(&b, "Constraints", constraints(sc), 0)
+	writeRows(&b, "Constraints", constraints(parsed), 0)
 
 	var cmds []row
 	for _, c := range runnableBelow(n) {
@@ -201,13 +204,31 @@ func usageParts(n, stop *kong.Node) (parts []string, optional bool) {
 		}
 	}
 	if hasVisibleChildren(n) {
-		if runnable(n) || n.DefaultCmd != nil {
+		if commandOptional(n) {
 			parts = append(parts, "[<command>]")
 		} else {
 			parts = append(parts, "<command>")
 		}
 	}
 	return parts, optional
+}
+
+// commandOptional reports whether n parses with no command named. Kong then
+// selects n's default command, which must demand nothing of argv, or runs n
+// itself when it has no default.
+func commandOptional(n *kong.Node) bool {
+	if d := n.DefaultCmd; d != nil {
+		return !demandsArgv(d)
+	}
+	return runnable(n)
+}
+
+// demandsArgv reports whether n's usage line has a part of its own that Kong
+// requires: a required flag or group, or a required positional argument.
+func demandsArgv(n *kong.Node) bool {
+	sc := scopeOf(n)
+	return slices.ContainsFunc(visibleFlags(n), sc.required) ||
+		slices.ContainsFunc(n.Positional, func(p *kong.Positional) bool { return !p.Tag.Hidden && p.Required })
 }
 
 // commandLine is the program name followed by the command path to n.

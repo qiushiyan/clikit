@@ -35,6 +35,25 @@ type spanningFetch struct {
 	Remote bool `xor:"where" required:"" help:"Use the remote copy."`
 }
 
+// A hidden default is rejected only where its arguments and flags parse at
+// its parent's level.
+type hiddenDefault struct {
+	Show showCmd `cmd:"" default:"withargs" hidden:"" help:"Show a brief."`
+	Repo struct {
+		List peerCmd `cmd:"" default:"1" hidden:"" help:"List them."`
+		Add  peerCmd `cmd:"" help:"Add one."`
+	} `cmd:"" help:"Manage repositories."`
+}
+
+type branchingDefault struct {
+	Repo struct {
+		All  bool    `help:"Every machine's."`
+		List peerCmd `cmd:"" default:"1" help:"List them."`
+		Add  peerCmd `cmd:"" help:"Add one."`
+	} `cmd:"" default:"withargs" help:"Manage repositories."`
+	Sync peerCmd `cmd:"" help:"Sync them."`
+}
+
 type tangledGroups struct {
 	Solo   string `required:"" and:"solo" help:"Solo."`
 	Keep   string `xor:"how" required:"" and:"note" help:"Keep."`
@@ -68,6 +87,12 @@ func TestDeclarationRejections(t *testing.T) {
 		{"group spanning commands", clikit.App{Name: "g", Description: "g groups flags.", New: func() any { return &spanningGroup{} }}, []string{
 			`xor group "where" spans --local, --remote of fetch`,
 		}, []string{"has only"}},
+		{"hidden default command", clikit.App{Name: "brief", Description: "brief indexes handoff briefs.", New: func() any { return &hiddenDefault{} }}, []string{
+			"default command show is hidden, but its arguments and flags parse as brief's own",
+		}, []string{"repo list"}},
+		{"default command with commands", clikit.App{Name: "tool", Description: "tool keeps repositories.", New: func() any { return &branchingDefault{} }}, []string{
+			"default command repo has commands of its own",
+		}, nil},
 		{"groups Kong checks differently", clikit.App{Name: "g", Description: "g groups flags.", New: func() any { return &tangledGroups{} }}, []string{
 			`required and group "solo" has only --solo`,
 			`flag --keep is in required xor group "how" and in and group "note"`,

@@ -1,11 +1,28 @@
 Usage: g <command>
+   or: g (--to=TO | --stdout) [<message>] [flags]
 
 g groups flags.
 
 Flags:
-  -h, --help    Show context-sensitive help.
+  -h, --help               Show context-sensitive help.
+
+Arguments and flags of send, the default command:
+  <message>                What to send; stdin when omitted (optional).
+      --print              Print what was sent.
+      --notify             Notify the recipient instead.
+      --to=TO              Address to send it to.
+      --stdout             Write it to stdout instead.
+      --account=ACCOUNT    Account to send from.
+      --secret=SECRET      That account's password.
+
+Constraints:
+  At most one of --print, --notify.
+  Exactly one of --to, --stdout.
+  All or none of --account, --secret.
 
 Commands:
+  send (--to=TO | --stdout) [<message>]
+      Send a message (default).
   connect --host=HOST --path=PATH --port=INT --mirror=MIRROR --into=INTO
       Connect to a host.
   pick (--north | --south) (--north | --east) (--east | --west)

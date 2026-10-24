@@ -32,6 +32,21 @@ func checkDeclaration(k *kong.Kong) error {
 		if n.Type == kong.CommandNode && !n.Hidden && strings.TrimSpace(n.Help) == "" {
 			problems = append(problems, "command "+strings.Join(pathBelow(n, nil), " ")+" has no help")
 		}
+		// A withargs default's arguments and flags parse at its parent's level,
+		// so the parent's page lists them under the command's name, and an
+		// error in them points to the command's own page: hidden, help would
+		// name a command its tag hides. Its own commands would parse in the
+		// parent's command slot beside the parent's, and Kong never selects
+		// their default from there.
+		if d := defaultWithArgs(n); d != nil {
+			name, parent := strings.Join(pathBelow(d, nil), " "), commandLine(app, n)
+			if d.Hidden {
+				problems = append(problems, "default command "+name+" is hidden, but its arguments and flags parse as "+parent+"'s own, so help names it all the same: make it visible")
+			}
+			if hasVisibleChildren(d) {
+				problems = append(problems, "default command "+name+" has commands of its own, so "+parent+"'s usage lines cannot tell them from "+parent+"'s commands: make a command without subcommands the default")
+			}
+		}
 		for _, f := range n.Flags {
 			if !f.Hidden && strings.TrimSpace(f.Help) == "" {
 				problems = append(problems, "flag --"+f.Name+where+" has no help")
